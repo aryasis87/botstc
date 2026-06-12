@@ -1,0 +1,331 @@
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import type { RealtimeChannel } from '@supabase/supabase-js';
+import { SupabaseService } from '../supabase/supabase.service';
+import { TelegramSignal } from './types';
+
+interface SignalCallback {
+  (userId: string, signal: TelegramSignal): void;
+}
+
+@Injectable()
+export class TelegramSignalService implements OnModuleDestroy {
+  private readonly logger = new Logger(TelegramSignalService.name);
+
+  // Per-user callbacks: userId → callback
+  private signalCallbacks = new Map<string, SignalCallback>();
+
+  // Track which userIds are actively listening
+  private activeUserIds = new Set<string>();
+
+  // Single global Supabase Realtime channel for 'telegram_signals' table
+  // (written by Python bridge after receiving from Telegram)
+  private globalChannel: RealtimeChannel | null = null;
+
+  constructor(private readonly supabaseService: SupabaseService) {}
+
+  async onModuleDestroy() {
+    await this.stopGlobalListener();
+    this.signalCallbacks.clear();
+    this.activeUserIds.clear();
+    this.logger.log('TelegramSignalService destroyed, all listeners cleaned up');
+  }
+
+  /**
+   * Register a callback for a specific user.
+   * When a global signal arrives, all registered users receive it.
+   */
+  setSignalCallback(userId: string, callback: SignalCallback): void {
+    this.signalCallbacks.set(userId, callback);
+    this.logger.log(`[${userId}] Signal callback registered`);
+  }
+
+  /**
+   * Start listening for signals for a user.
+   * Starts the global Firestore listener if not already running.
+   */
+  async startListening(userId: string): Promise<void> {
+    if (this.activeUserIds.has(userId)) {
+      this.logger.warn(`[${userId}] Already listening for signals`);
+      return;
+    }
+
+    this.activeUserIds.add(userId);
+    this.logger.log(`[${userId}] Starting to listen for Telegram signals`);
+
+    // Start global listener if not already running
+    if (!this.globalChannel) {
+      await this.startGlobalListener();
+    }
+
+    this.logger.log(`[${userId}] Signal listeners started successfully`);
+  }
+
+  /**
+   * Stop listening for a specific user.
+   * Stops the global listener if no users remain.
+   */
+  stopListening(userId: string): void {
+    this.activeUserIds.delete(userId);
+    this.signalCallbacks.delete(userId);
+    this.logger.log(`[${userId}] Signal listener stopped`);
+
+    // Stop global listener if no users are left
+    if (this.activeUserIds.size === 0) {
+      this.stopGlobalListener();
+    }
+  }
+
+  /**
+   * Start global Supabase Realtime listener on 'telegram_signals' table.
+   * Written by the Python Telegram bridge.
+   *
+   * Schema written by Python:
+   * {
+   *   trend: "call" | "put",
+   *   hour: number,
+   *   minute: number,
+   *   second: number,
+   *   originalMessage: string,
+   *   autoTimeAdded: boolean,
+   *   receivedAt: number (ms),
+   *   source: "telegram",
+   * }
+   *
+   * IMPORTANT: Always call stopGlobalListener() first to remove any existing
+   * channel with the same name. Supabase throws
+   * "cannot add postgres_changes callbacks after subscribe()" if a channel
+   * with that name still exists in the internal registry.
+   */
+  private async startGlobalListener(): Promise<void> {
+    try {
+      // Always clean up any stale channel before creating a new one.
+      // removeChannel() is async; not awaiting it caused the "after subscribe" error.
+      await this.stopGlobalListener();
+
+      const channel = this.supabaseService.client
+        .channel('telegram_signals_global')
+        .on(
+          'postgres_changes' as any,
+          { event: 'INSERT', schema: 'public', table: 'telegram_signals' },
+          (payload: any) => {
+            this.processGlobalSignal(payload.new, payload.new.id);
+          },
+        )
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED') {
+            this.logger.log(
+              `✅ Supabase realtime listener started on 'telegram_signals' table`,
+            );
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            this.logger.error(`Supabase realtime listener error: ${status}`);
+            this.globalChannel = null;
+            setTimeout(() => {
+              if (this.activeUserIds.size > 0) {
+                this.startGlobalListener().catch((e) =>
+                  this.logger.error(`Failed to restart global listener: ${(e as Error).message}`),
+                );
+              }
+            }, 5000);
+          }
+        });
+
+      this.globalChannel = channel;
+    } catch (error) {
+      this.logger.error(
+        `Failed to start global listener: ${(error as Error).message}`,
+      );
+      throw error;
+    }
+  }
+
+  private async stopGlobalListener(): Promise<void> {
+    if (this.globalChannel) {
+      try {
+        await this.supabaseService.client.removeChannel(this.globalChannel);
+      } catch (e) {
+        // Ignore errors during cleanup (channel may already be gone)
+        this.logger.warn(`Error removing channel: ${(e as Error).message}`);
+      }
+      this.globalChannel = null;
+      this.logger.log('Global Supabase listener stopped');
+    }
+  }
+
+  /**
+   * Process a new signal from the global 'telegram_signals' collection.
+   * Broadcasts to ALL active user callbacks.
+   */
+  private async processGlobalSignal(data: any, docId: number): Promise<void> {
+    try {
+
+      this.logger.log(
+        `📡 New Telegram signal received: ${JSON.stringify(data)}`,
+      );
+
+      if (!data.trend) {
+        this.logger.warn('Invalid signal: missing trend, deleting');
+        await this.supabaseService.client.from('telegram_signals').delete().eq('id', docId);
+        return;
+      }
+
+      const trend = this.normalizeTrend(data.trend);
+      const receivedAt: number = data.receivedAt ?? Date.now();
+
+      // Calculate execution time from hour:minute:second
+      let executionTime: number;
+      if (data.hour !== undefined && data.minute !== undefined) {
+        executionTime = this.calculateExecutionTime(
+          Number(data.hour),
+          Number(data.minute),
+          Number(data.second ?? 0),
+          receivedAt,
+        );
+      } else {
+        executionTime = this.calculateExecutionTimeFromNow();
+      }
+
+      const signal: TelegramSignal = {
+        trend,
+        executionTime,
+        receivedAt,
+        originalMessage: data.originalMessage ?? `Telegram: ${trend}`,
+      };
+
+      this.logger.log(
+        `✅ Signal parsed: ${trend.toUpperCase()} → execute at ${new Date(executionTime).toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })} WIB`,
+      );
+
+      // Broadcast to ALL active users
+      const activeCount = this.activeUserIds.size;
+      if (activeCount === 0) {
+        this.logger.warn('Signal received but no active AI Signal users');
+      } else {
+        this.logger.log(`Broadcasting signal to ${activeCount} active user(s)`);
+        for (const userId of this.activeUserIds) {
+          const callback = this.signalCallbacks.get(userId);
+          if (callback) {
+            try {
+              callback(userId, signal);
+              this.logger.log(`[${userId}] Signal dispatched`);
+            } catch (cbErr) {
+              this.logger.error(
+                `[${userId}] Callback error: ${(cbErr as Error).message}`,
+              );
+            }
+          } else {
+            this.logger.warn(`[${userId}] No callback registered, signal dropped`);
+          }
+        }
+      }
+
+      // Delete processed signal from Supabase
+      await this.supabaseService.client.from('telegram_signals').delete().eq('id', docId);
+      this.logger.debug(`Signal document ${docId} deleted after processing`);
+    } catch (error) {
+      this.logger.error(
+        `Error processing global signal: ${(error as Error).message}`,
+      );
+      try {
+        await this.supabaseService.client.from('telegram_signals').delete().eq('id', docId);
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  /**
+   * Calculate execution timestamp from explicit hour:minute:second (WIB time).
+   *
+   * hour:minute:second from the Python bridge are already in WIB (UTC+7).
+   * The VPS server runs in UTC, so we must NOT use plain new Date().setHours()
+   * (that would interpret the value as UTC, shifting the result by +7 hours).
+   * Instead we mirror ScheduleService.toJakartaMs(): build a Date in the
+   * "Jakarta frame" by adding JAKARTA_OFFSET_MS, apply setHours there, then
+   * subtract the offset to get the correct UTC epoch milliseconds.
+   */
+  private calculateExecutionTime(
+    hour: number,
+    minute: number,
+    second: number,
+    referenceMs: number,
+  ): number {
+    const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
+
+    // Build a Date shifted into Jakarta time so setHours works in WIB
+    const jakartaNow = new Date(Date.now() + JAKARTA_OFFSET_MS);
+    const target = new Date(jakartaNow);
+    target.setHours(hour, minute, second, 0);
+
+    // Convert back to real UTC epoch
+    let utcMs = target.getTime() - JAKARTA_OFFSET_MS;
+
+    // If the calculated time is already in the past, schedule for tomorrow
+    if (utcMs < referenceMs) {
+      utcMs += 86_400_000; // +1 day
+      this.logger.log(
+        `Time already passed, scheduling for tomorrow: ${new Date(utcMs).toISOString()}`,
+      );
+    }
+
+    return utcMs;
+  }
+
+  /**
+   * Calculate execution time when no explicit time is given.
+   * Mirrors Python logic: next minute if ≥30s remaining, +2 min otherwise.
+   */
+  calculateExecutionTimeFromNow(): number {
+    const now = new Date();
+    const currentSecond = now.getSeconds();
+    const minutesToAdd = (60 - currentSecond) >= 30 ? 1 : 2;
+
+    now.setSeconds(0, 0);
+    now.setMinutes(now.getMinutes() + minutesToAdd);
+
+    this.logger.log(
+      `Auto execution time: +${minutesToAdd}min → ${now.toISOString()}`,
+    );
+    return now.getTime();
+  }
+
+  /**
+   * Normalize trend string to "call" | "put"
+   */
+  private normalizeTrend(trend: string): string {
+    const t = trend.toLowerCase().trim();
+    if (['buy', 'call', 'b', 'up'].includes(t)) return 'call';
+    if (['sell', 'put', 's', 'down'].includes(t)) return 'put';
+    return t;
+  }
+
+  /**
+   * Inject a test signal directly into Firestore (for testing without Python bridge)
+   */
+  async injectTestSignal(
+    userId: string,
+    trend: string,
+    delayMs = 5000,
+  ): Promise<void> {
+    const executionTime = Date.now() + delayMs;
+    await this.supabaseService.client.from('telegram_signals').insert({
+      trend,
+      execution_time: executionTime,
+      received_at: Date.now(),
+      original_message: `Test signal: ${trend}`,
+      source: 'test',
+      processed_at: this.supabaseService.now(),
+    });
+    this.logger.log(`[${userId}] Test signal injected: ${trend} (delay: ${delayMs}ms)`);
+  }
+
+  /**
+   * Get listening status for a user
+   */
+  getStatus(userId: string): { isListening: boolean; hasCallback: boolean; globalListenerActive: boolean } {
+    return {
+      isListening: this.activeUserIds.has(userId),
+      hasCallback: this.signalCallbacks.has(userId),
+      globalListenerActive: this.globalChannel !== null,
+    };
+  }
+}
