@@ -127,13 +127,21 @@ export class ProfileService {
       curlGet(`${BASE_URL}/passport/v1/user_profile?locale=id`, headers, 10),
     ]);
 
-    // Ambil data mentah dari masing-masing endpoint (keduanya perlu untuk merge)
-    const v2Data: any = v2Result.status === 'fulfilled'
-      ? (v2Result.value?.data?.data ?? v2Result.value?.data ?? null)
-      : null;
-    const v1Data: any = v1Result.status === 'fulfilled'
-      ? (v1Result.value?.data?.data ?? v1Result.value?.data ?? null)
-      : null;
+    // Ambil data BERSIH: curlGet tidak throw pada 4xx (mengembalikan {status,data}).
+    // Tanpa cek status/success, response error v2 (HTTP 422 "unauthorized" →
+    // {success:false,data:null,errors:[...]}) ikut dipakai sebagai data karena
+    // `?? value.data` jatuh ke envelope error yang truthy → SEMUA field profil
+    // jadi kosong. Filter: hanya pakai jika HTTP 2xx & bukan envelope error.
+    const pick = (r: PromiseSettledResult<any>): any => {
+      if (r.status !== 'fulfilled') return null;
+      const resp = r.value;
+      if (!resp || (typeof resp.status === 'number' && resp.status >= 400)) return null;
+      const body = resp.data;
+      if (body && body.success === false) return null;
+      return body?.data ?? body ?? null;
+    };
+    const v2Data: any = pick(v2Result);
+    const v1Data: any = pick(v1Result);
 
     if (!v2Data && !v1Data) {
       this.logger.error(`getProfile error: kedua endpoint gagal`);
