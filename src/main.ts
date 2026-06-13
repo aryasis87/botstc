@@ -10,6 +10,8 @@ import { AppModule } from './app.module';
  */
 function buildCorsOrigins(): string[] {
   const prod = [
+    'https://stcautotrade.id',
+    'https://www.stcautotrade.id',
     'https://v2.stcautotrade.id',
     'https://stcautotradepro.id',
     'https://bot.stcautotrade.id',
