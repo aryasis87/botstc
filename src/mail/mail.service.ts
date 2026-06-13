@@ -10,6 +10,12 @@ import * as nodemailer from 'nodemailer';
  *   SMTP_USER   (support@stcautotrade.id)
  *   SMTP_PASS   (password mailbox)
  *   MAIL_FROM   (opsional, mis. "STC AutoTrade <support@stcautotrade.id>")
+ *
+ * ⚠️ KNOWN ISSUE (2026-06-13): VPS produksi memblokir SEMUA port SMTP keluar
+ * (25/465/587 timeout) → kirim gagal "Connection timeout". Fitur email DITUNDA.
+ * Solusi & langkah perbaikan lengkap ada di .env.example bagian SMTP
+ * (ringkas: cek port 2525 → relay Brevo tanpa ubah kode; atau ganti ke Email
+ * API HTTPS:443 yang berarti mengubah service ini dari nodemailer → HTTP API).
  */
 @Injectable()
 export class MailService {
