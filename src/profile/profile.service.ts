@@ -106,14 +106,23 @@ export class ProfileService {
    * Setelah dapat profile, jika currency di session masih 'IDR' tapi profile
    * menunjukkan currency berbeda → auto-update session di Supabase.
    */
+  /**
+   * Proxy untuk request Stockity yang GEO-SENSITIF (profile/balance/currencies).
+   * IP VPS diblok Stockity → endpoint ini harus lewat IP residensial (Indonesia)
+   * via LOGIN_PROXY, sama seperti login. Kosong → undefined (tanpa proxy).
+   */
+  private get geoProxy(): string | undefined {
+    return (process.env.LOGIN_PROXY ?? '').trim() || undefined;
+  }
+
   async getProfile(userId: string) {
     const session = await this.getSession(userId);
     const headers = this.buildHeaders(session);
 
-    // ── Fetch kedua endpoint paralel ──────────────────────────────────────
+    // ── Fetch kedua endpoint paralel (via proxy — endpoint geo-sensitif) ───
     const [v2Result, v1Result] = await Promise.allSettled([
-      curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 10),
-      curlGet(`${BASE_URL}/passport/v1/user_profile?locale=id`, headers, 10),
+      curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 10, this.geoProxy),
+      curlGet(`${BASE_URL}/passport/v1/user_profile?locale=id`, headers, 10, this.geoProxy),
     ]);
 
     // Ambil data mentah dari masing-masing endpoint (keduanya perlu untuk merge)
@@ -157,6 +166,7 @@ export class ProfileService {
         `${BASE_URL}/bank/v1/read?locale=id`,
         { ...this.buildHeaders(session), 'Cache-Control': 'no-cache' },
         10, // timeout 10s
+        this.geoProxy, // endpoint balance geo-sensitif → lewat proxy
       );
       const data: any[] = resp.data?.data || [];
       const real = data.find((d) => d.account_type === 'real');
@@ -199,6 +209,7 @@ export class ProfileService {
         `${BASE_URL}/platform/private/v2/currencies?locale=id`,
         { ...this.buildHeaders(session), 'cache-control': 'no-cache' },
         10, // timeout 10s
+        this.geoProxy, // endpoint currencies geo-sensitif → lewat proxy
       );
       return resp.data?.data || resp.data;
     } catch (err: any) {
@@ -225,12 +236,11 @@ export class ProfileService {
       // Endpoint currencies geo-sensitif: dari IP VPS (negara terblok) Stockity
       // mengembalikan daftar tanpa IDR. Routing lewat LOGIN_PROXY (IP Indonesia)
       // agar daftar mata uang sesuai region akun. JSON kecil → kuota proxy minim.
-      const proxy = (process.env.LOGIN_PROXY ?? '').trim() || undefined;
       const resp = await curlGet(
         `${BASE_URL}/platform/private/v2/currencies?locale=id`,
         { ...this.buildHeaders(session), 'cache-control': 'no-cache' },
         10,
-        proxy,
+        this.geoProxy,
       );
       const data: any = resp.data?.data ?? resp.data;
       if (!data) throw new Error('Response data kosong');
