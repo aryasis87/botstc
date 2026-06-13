@@ -222,10 +222,15 @@ export class ProfileService {
   async getCurrencyConfig(userId: string) {
     const session = await this.getSession(userId);
     try {
+      // Endpoint currencies geo-sensitif: dari IP VPS (negara terblok) Stockity
+      // mengembalikan daftar tanpa IDR. Routing lewat LOGIN_PROXY (IP Indonesia)
+      // agar daftar mata uang sesuai region akun. JSON kecil → kuota proxy minim.
+      const proxy = (process.env.LOGIN_PROXY ?? '').trim() || undefined;
       const resp = await curlGet(
         `${BASE_URL}/platform/private/v2/currencies?locale=id`,
         { ...this.buildHeaders(session), 'cache-control': 'no-cache' },
         10,
+        proxy,
       );
       const data: any = resp.data?.data ?? resp.data;
       if (!data) throw new Error('Response data kosong');

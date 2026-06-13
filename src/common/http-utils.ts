@@ -37,6 +37,7 @@ function buildCurlConfig(opts: {
   headers: Record<string, string>;
   body?: object;
   timeoutSec: number;
+  proxy?: string;
 }): string {
   const lines: string[] = [
     'silent',
@@ -44,6 +45,11 @@ function buildCurlConfig(opts: {
     `request = "${escConfig(opts.method)}"`,
     `url = "${escConfig(opts.url)}"`,
   ];
+  // Routing opsional lewat proxy (mis. endpoint geo-sensitif Stockity).
+  // Dikirim via config/stdin juga → kredensial proxy tidak bocor ke `ps aux`.
+  if (opts.proxy) {
+    lines.push(`proxy = "${escConfig(opts.proxy)}"`);
+  }
   for (const [k, v] of Object.entries(opts.headers)) {
     lines.push(`header = "${escConfig(`${k}: ${v}`)}"`);
   }
@@ -103,8 +109,9 @@ export async function curlGet(
   url: string,
   headers: Record<string, string>,
   timeoutSec = 15,
+  proxy?: string,
 ): Promise<CurlResponse> {
-  const config = buildCurlConfig({ method: 'GET', url, headers, timeoutSec });
+  const config = buildCurlConfig({ method: 'GET', url, headers, timeoutSec, proxy });
   return parseCurlOutput(await runCurl(config, timeoutSec));
 }
 
@@ -116,7 +123,8 @@ export async function curlPost(
   body: object,
   headers: Record<string, string>,
   timeoutSec = 15,
+  proxy?: string,
 ): Promise<CurlResponse> {
-  const config = buildCurlConfig({ method: 'POST', url, headers, body, timeoutSec });
+  const config = buildCurlConfig({ method: 'POST', url, headers, body, timeoutSec, proxy });
   return parseCurlOutput(await runCurl(config, timeoutSec));
 }
