@@ -107,9 +107,11 @@ export class ProfileService {
    * menunjukkan currency berbeda → auto-update session di Supabase.
    */
   /**
-   * Proxy untuk request Stockity yang GEO-SENSITIF (profile/balance/currencies).
-   * IP VPS diblok Stockity → endpoint ini harus lewat IP residensial (Indonesia)
-   * via LOGIN_PROXY, sama seperti login. Kosong → undefined (tanpa proxy).
+   * Proxy hanya untuk endpoint Stockity yang GEO-FILTERED — yaitu daftar
+   * `currencies` (dari IP VPS daftarnya tanpa IDR). profile/balance TIDAK
+   * geo-filtered (data milik akun sendiri) → tetap direct dari IP VPS untuk
+   * menghemat kuota proxy. Terbukti via tes: bank/v1/read direct = HTTP 200.
+   * Kosong → undefined (tanpa proxy).
    */
   private get geoProxy(): string | undefined {
     return (process.env.LOGIN_PROXY ?? '').trim() || undefined;
@@ -119,10 +121,10 @@ export class ProfileService {
     const session = await this.getSession(userId);
     const headers = this.buildHeaders(session);
 
-    // ── Fetch kedua endpoint paralel (via proxy — endpoint geo-sensitif) ───
+    // ── Fetch kedua endpoint paralel (direct — data akun, bukan geo-filtered) ──
     const [v2Result, v1Result] = await Promise.allSettled([
-      curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 10, this.geoProxy),
-      curlGet(`${BASE_URL}/passport/v1/user_profile?locale=id`, headers, 10, this.geoProxy),
+      curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 10),
+      curlGet(`${BASE_URL}/passport/v1/user_profile?locale=id`, headers, 10),
     ]);
 
     // Ambil data mentah dari masing-masing endpoint (keduanya perlu untuk merge)
@@ -165,8 +167,7 @@ export class ProfileService {
       const resp = await curlGet(
         `${BASE_URL}/bank/v1/read?locale=id`,
         { ...this.buildHeaders(session), 'Cache-Control': 'no-cache' },
-        10, // timeout 10s
-        this.geoProxy, // endpoint balance geo-sensitif → lewat proxy
+        10, // timeout 10s — direct (data akun, bukan geo-filtered) → hemat kuota proxy
       );
       const data: any[] = resp.data?.data || [];
       const real = data.find((d) => d.account_type === 'real');
