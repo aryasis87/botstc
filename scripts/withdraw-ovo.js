@@ -74,9 +74,13 @@ function runCurl(opts) {
       'curl',
       ['-K', '-'],
       { maxBuffer: 20 * 1024 * 1024, timeout: (timeoutSec + 5) * 1000 },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         if (stdout) return resolve(stdout);
-        if (err) return reject(err);
+        if (err) {
+          err.message = `curl gagal: ${err.message}` +
+            (stderr ? ` | stderr: ${String(stderr).trim()}` : '');
+          return reject(err);
+        }
         resolve('');
       },
     );
@@ -160,9 +164,12 @@ async function main() {
   console.log(`✓ Session ditemukan: ${email} (user_id=${session.user_id})`);
 
   // Proxy: utamakan override env, lalu proxy_url per-akun dari DB (Stockity
-  // geo-filtered → request harus lewat proxy akun). Hanya untuk call Stockity,
-  // bukan call Supabase. PK/password DI DB sengaja TIDAK dipakai.
-  const proxy = (process.env.STOCKITY_PROXY || session.proxy_url || '').trim() || undefined;
+  // geo-filtered → request bisa perlu lewat proxy akun). Hanya untuk call
+  // Stockity, bukan call Supabase. PK/password DI DB sengaja TIDAK dipakai.
+  // NO_PROXY=1 atau STOCKITY_PROXY=direct → paksa direct (tanpa proxy).
+  const stoxProxyEnv = (process.env.STOCKITY_PROXY || '').trim();
+  const forceDirect = process.env.NO_PROXY === '1' || /^(none|direct)$/i.test(stoxProxyEnv);
+  const proxy = forceDirect ? undefined : (stoxProxyEnv || session.proxy_url || '').trim() || undefined;
   console.log(`✓ Proxy Stockity: ${proxy || '(direct, tanpa proxy)'}`);
 
   const headers = buildHeaders(session);
