@@ -257,34 +257,31 @@ export class AdminService {
   }
 
   // ── Reaktivasi & standing admin ─────────────────────────────────────────────────
-  private readonly PRICE_PER_USER = 0.5;
+  // Alur: admin ajukan (pending) → super-admin ACC + tetapkan nominal (awaiting_payment)
+  //       → admin bayar via DM → super-admin konfirmasi (paid → reaktivasi diterapkan).
 
-  /** Standing admin saat ini: masa aktif, jumlah user di-add, biaya reaktivasi, request pending. */
+  /** Standing admin saat ini: masa aktif, jumlah user di-add, request aktif. */
   async getMyStanding(email: string): Promise<{
     expires_at: string | null; is_active: boolean; isSuperAdmin: boolean;
-    userCount: number; pricePerUser: number; amountUsd: number;
-    pendingRequest: any | null;
+    userCount: number; pendingRequest: any | null;
   }> {
     const e = email.toLowerCase().trim();
     const { isSuperAdmin } = await this.getMe(e);
     const [{ data: w }, cntRes, { data: pending }] = await Promise.all([
       this.db.from('whitelist_users').select('expires_at, is_active').eq('email', e).maybeSingle(),
       this.db.from('whitelist_users').select('*', { count: 'exact', head: true }).eq('added_by', e),
-      this.db.from('reactivation_requests').select('*').eq('admin_email', e).eq('status', 'pending').order('id', { ascending: false }).maybeSingle(),
+      this.db.from('reactivation_requests').select('*').eq('admin_email', e).in('status', ['pending', 'awaiting_payment']).order('id', { ascending: false }).maybeSingle(),
     ]);
-    const userCount = cntRes.count ?? 0;
     return {
       expires_at: w?.expires_at ?? null,
       is_active: w?.is_active ?? true,
       isSuperAdmin,
-      userCount,
-      pricePerUser: this.PRICE_PER_USER,
-      amountUsd: +(userCount * this.PRICE_PER_USER).toFixed(2),
+      userCount: cntRes.count ?? 0,
       pendingRequest: pending ?? null,
     };
   }
 
-  /** Admin biasa mengajukan reaktivasi (paket 7/14/30 hari). Pembayaran via DM manual. */
+  /** Admin biasa mengajukan reaktivasi (paket 7/14/30 hari). Nominal ditetapkan super-admin saat approve. */
   async requestReactivation(email: string, days: number): Promise<any> {
     const e = email.toLowerCase().trim();
     if (![7, 14, 30].includes(days)) throw new BadRequestException('Paket tidak valid (7/14/30 hari)');
@@ -294,13 +291,12 @@ export class AdminService {
 
     const { count } = await this.db.from('whitelist_users').select('*', { count: 'exact', head: true }).eq('added_by', e);
     const userCount = count ?? 0;
-    const amount = +(userCount * this.PRICE_PER_USER).toFixed(2);
 
-    // Satu request pending aktif per admin — hapus yang lama
-    await this.db.from('reactivation_requests').delete().eq('admin_email', e).eq('status', 'pending');
+    // Satu request aktif per admin — hapus yang masih pending / menunggu bayar
+    await this.db.from('reactivation_requests').delete().eq('admin_email', e).in('status', ['pending', 'awaiting_payment']);
     const { data, error } = await this.db.from('reactivation_requests').insert({
       admin_email: e, admin_name: adm.name || e.split('@')[0],
-      days, user_count: userCount, amount_usd: amount, status: 'pending',
+      days, user_count: userCount, amount_usd: 0, status: 'pending',
     }).select().single();
     if (error) throw new BadRequestException('Gagal mengajukan reaktivasi: ' + error.message);
     return data;
@@ -314,23 +310,37 @@ export class AdminService {
     return data ?? [];
   }
 
-  /** Super-admin ACCEPT (setelah pembayaran via DM) → reaktivasi admin sesuai paket. */
-  async approveReactivation(id: number, resolver: string): Promise<{ admin_email: string; days: number }> {
+  /** Super-admin ACCEPT + tetapkan nominal → status menunggu pembayaran (belum reaktivasi). */
+  async approveReactivation(id: number, resolver: string, amountUsd: number): Promise<{ admin_email: string; days: number; amount_usd: number }> {
+    if (!(amountUsd > 0)) throw new BadRequestException('Nominal pembayaran harus lebih dari 0');
     const { data: r } = await this.db.from('reactivation_requests').select('*').eq('id', id).maybeSingle();
     if (!r) throw new NotFoundException('Permintaan tidak ditemukan');
     if (r.status !== 'pending') throw new BadRequestException('Permintaan sudah diproses');
-    await this.setUserPeriod(r.admin_email, r.days);  // reaktivasi + perpanjang
+    const amount = +Number(amountUsd).toFixed(2);
     const { error } = await this.db.from('reactivation_requests')
-      .update({ status: 'approved', resolved_at: new Date().toISOString(), resolved_by: resolver.toLowerCase().trim() })
+      .update({ status: 'awaiting_payment', amount_usd: amount, resolved_by: resolver.toLowerCase().trim() })
       .eq('id', id);
     if (error) throw new BadRequestException('Gagal approve: ' + error.message);
+    return { admin_email: r.admin_email, days: r.days, amount_usd: amount };
+  }
+
+  /** Super-admin konfirmasi pembayaran diterima → reaktivasi admin sesuai paket. */
+  async confirmReactivationPayment(id: number, resolver: string): Promise<{ admin_email: string; days: number }> {
+    const { data: r } = await this.db.from('reactivation_requests').select('*').eq('id', id).maybeSingle();
+    if (!r) throw new NotFoundException('Permintaan tidak ditemukan');
+    if (r.status !== 'awaiting_payment') throw new BadRequestException('Permintaan belum disetujui / sudah selesai');
+    await this.setUserPeriod(r.admin_email, r.days);  // reaktivasi + perpanjang
+    const { error } = await this.db.from('reactivation_requests')
+      .update({ status: 'paid', resolved_at: new Date().toISOString(), resolved_by: resolver.toLowerCase().trim() })
+      .eq('id', id);
+    if (error) throw new BadRequestException('Gagal konfirmasi pembayaran: ' + error.message);
     return { admin_email: r.admin_email, days: r.days };
   }
 
   async rejectReactivation(id: number, resolver: string): Promise<void> {
     const { data: r } = await this.db.from('reactivation_requests').select('status').eq('id', id).maybeSingle();
     if (!r) throw new NotFoundException('Permintaan tidak ditemukan');
-    if (r.status !== 'pending') throw new BadRequestException('Permintaan sudah diproses');
+    if (r.status !== 'pending' && r.status !== 'awaiting_payment') throw new BadRequestException('Permintaan sudah diproses');
     const { error } = await this.db.from('reactivation_requests')
       .update({ status: 'rejected', resolved_at: new Date().toISOString(), resolved_by: resolver.toLowerCase().trim() })
       .eq('id', id);

@@ -206,12 +206,20 @@ export class AdminController {
     return this.svc.listReactivationRequests();
   }
 
-  /** Super-admin ACCEPT (setelah dibayar via DM). */
+  /** Super-admin ACCEPT + tetapkan nominal → status menunggu pembayaran. */
   @UseGuards(SuperAdminGuard)
   @Post('reactivation/approve')
   @HttpCode(200)
-  approveReactivation(@Request() req, @Body() body: { id: number }) {
-    return this.svc.approveReactivation(Number(body.id), req.user.email);
+  approveReactivation(@Request() req, @Body() body: { id: number; amount: number }) {
+    return this.svc.approveReactivation(Number(body.id), req.user.email, Number(body.amount) || 0);
+  }
+
+  /** Super-admin konfirmasi pembayaran diterima → reaktivasi diterapkan. */
+  @UseGuards(SuperAdminGuard)
+  @Post('reactivation/confirm-payment')
+  @HttpCode(200)
+  confirmReactivationPayment(@Request() req, @Body() body: { id: number }) {
+    return this.svc.confirmReactivationPayment(Number(body.id), req.user.email);
   }
 
   @UseGuards(SuperAdminGuard)
