@@ -158,7 +158,10 @@ export class AdminService {
       base().eq('is_active', true),
       base().eq('is_active', false),
       base().gte('last_login', threshold24h),
-      base(),
+      // Registration: hanya user yang mendaftar sendiri lewat halaman register
+      // (added_by = 'self-register'). Tidak di-scope per admin & tanpa batas waktu.
+      this.db.from('whitelist_users').select('*', { count: 'exact', head: true })
+        .eq('is_primary', false).eq('added_by', 'self-register'),
     ]);
     return {
       total: t.count ?? 0, active: a.count ?? 0, inactive: i.count ?? 0,
