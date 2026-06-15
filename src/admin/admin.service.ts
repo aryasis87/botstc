@@ -158,7 +158,7 @@ export class AdminService {
       base().eq('is_active', true),
       base().eq('is_active', false),
       base().gte('last_login', threshold24h),
-      base().eq('added_by', 'system').gte('added_at', threshold24h),
+      base(),
     ]);
     return {
       total: t.count ?? 0, active: a.count ?? 0, inactive: i.count ?? 0,
