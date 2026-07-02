@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 #
 # withdraw-ovo.sh — buat permintaan withdrawal OVO Stockity via curl (tanpa Node).
 # Setara dengan scripts/withdraw-ovo.ts. Butuh: bash, curl, jq.
@@ -18,7 +18,7 @@
 #
 set -uo pipefail
 
-BASE_URL="https://api.stockity.id"
+BASE_URL="https://api.stockity1.id"
 COUNTRY_ID="${COUNTRY_ID:-100}"
 LOCALE="${LOCALE:-en}"
 
@@ -44,7 +44,17 @@ if   [ "$#" -eq 2 ]; then EMAIL="$1"; AMOUNT="$2"
 elif [ "$#" -eq 1 ]; then AMOUNT="$1"
 else die "Usage: ./withdraw-ovo.sh <email> <amount>   (atau AUTH_TOKEN=... ./withdraw-ovo.sh <amount>)"
 fi
-[[ "$AMOUNT" =~ ^[0-9]+$ ]] || die "amount harus angka (rupiah), mis. 250000."
+[[ "$AMOUNT" =~ ^[0-9]+$ ]] || die "amount harus angka rupiah, mis. 200000 (= Rp200.000)."
+AMOUNT_MINOR=$((AMOUNT * 100))   # Stockity pakai satuan minor (×100)
+
+# ── Data penerima OVO (form_schema OVO tidak prefilled → wajib diisi) ─────────
+WD_FIRST_NAME="${WD_FIRST_NAME:-}"
+WD_LAST_NAME="${WD_LAST_NAME:-}"
+WD_OVO_NUMBER="${WD_OVO_NUMBER:-}"   # nomor OVO, format +62XXXXXXXXXX
+WD_CITY="${WD_CITY:-}"
+for v in WD_FIRST_NAME WD_LAST_NAME WD_OVO_NUMBER WD_CITY; do
+  [ -n "${!v}" ] || die "$v belum di-set (data penerima OVO wajib diisi)."
+done
 
 # ── Kredensial: dari env langsung, atau fetch dari Supabase by email ─────────
 AUTH_TOKEN="${AUTH_TOKEN:-}"
@@ -90,37 +100,44 @@ req() { # req <METHOD> <URL> [json-body]
     -H "user-timezone: $USER_TZ"
     -H "User-Agent: $USER_AGENT"
     -H "Accept: application/json, text/plain, */*"
-    -H "Origin: https://stockity.id"
-    -H "Referer: https://stockity.id/")
+    -H "Origin: https://stockity1.id"
+    -H "Referer: https://stockity1.id/")
   [ -n "$data" ] && args+=(-H "Content-Type: application/json" --data "$data")
   curl "${PROXY_ARGS[@]}" "${args[@]}"
 }
 
-# ── 1. Ambil metode payout OVO (purse id + form prefilled) ───────────────────
+# ── 1. Ambil metode payout OVO (purse id + limit) ────────────────────────────
 methods="$(req GET "$BASE_URL/platform/private/payouts/methods?country_id=$COUNTRY_ID&locale=$LOCALE")"
 jq -e . >/dev/null 2>&1 <<<"$methods" || die "respons methods bukan JSON (token expired?): $(head -c 200 <<<"$methods")"
-if [ "$(jq '[.data[]?|select(.payment_system=="ovo")]|length' <<<"$methods")" = "0" ]; then
-  die "Metode OVO tdk tersedia. Yg ada: $(jq -r '[.data[]?.payment_system]|join(", ")' <<<"$methods")"
+ovo="$(jq -c '.data[]?|select(.payment_system=="ovo")' <<<"$methods")"
+[ -n "$ovo" ] || die "Metode OVO tdk tersedia. Yg ada: $(jq -r '[.data[]?.payment_system]|join(", ")' <<<"$methods")"
+
+# Validasi nominal pakai limit dari Stockity (satuan minor).
+MIN_MINOR="$(jq -r '.min_amount' <<<"$ovo")"
+MAX_MINOR="$(jq -r '.max_amount' <<<"$ovo")"
+if [ "$AMOUNT_MINOR" -lt "$MIN_MINOR" ] || [ "$AMOUNT_MINOR" -gt "$MAX_MINOR" ]; then
+  die "Nominal Rp$AMOUNT di luar limit (Rp$((MIN_MINOR/100)) – Rp$((MAX_MINOR/100)))."
 fi
 
 # ── 2. Susun body withdrawal (struktur identik request browser) ──────────────
-body="$(jq -n --argjson m "$methods" --arg amount "$AMOUNT" '
-  ($m.data[]|select(.payment_system=="ovo")).purse_data as $p
-  | ($p.form_schema // [] | map({(.field): .value}) | add) as $f
-  | { amount: $amount,
-      city: $f.city,
-      bank_account_number: $f.bank_account_number,
-      last_name: $f.last_name,
-      first_name: $f.first_name,
-      purse: $p.id,
-      fingerprint: { color_depth:32, language:"en-US",
-        screen_height:693, screen_width:1231,
-        window_height:605, window_width:678,
-        time_zone_offset:-420, java_enabled:false, javascript_enabled:true },
-      comments_payout: "profits",
-      comments_text: "" }')"
+body="$(jq -n --argjson ovo "$ovo" \
+  --arg amount "$AMOUNT" \
+  --arg first_name "$WD_FIRST_NAME" --arg last_name "$WD_LAST_NAME" \
+  --arg ovo_number "$WD_OVO_NUMBER" --arg city "$WD_CITY" '
+  { amount: $amount,
+    city: $city,
+    bank_account_number: $ovo_number,
+    last_name: $last_name,
+    first_name: $first_name,
+    purse: $ovo.purse_data.id,
+    fingerprint: { color_depth:32, language:"en-US",
+      screen_height:693, screen_width:1231,
+      window_height:605, window_width:678,
+      time_zone_offset:-420, java_enabled:false, javascript_enabled:true },
+    comments_payout: "profits",
+    comments_text: "" }')"
 
-echo "── Request body ──"; jq . <<<"$body"
+echo "── Request body (amount = Rp$AMOUNT) ──"; jq . <<<"$body"
 
 if [ "${DRY_RUN:-}" = "1" ]; then
   echo "DRY_RUN=1 → tidak dikirim. Hapus DRY_RUN untuk eksekusi."; exit 0

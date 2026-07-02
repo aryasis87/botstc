@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+﻿import { Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
@@ -7,7 +7,7 @@ import {
   FastradeAlwaysSignalLossState,
 } from './fastrade-types';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 const MAX_PRICE_FETCH_TIME   = 5;
 const FALLBACK_MATCH_WINDOW_MS = 120_000;
 const TERMINAL_STATUSES = new Set(['won', 'win', 'lost', 'lose', 'loss', 'stand', 'draw', 'tie']);
@@ -227,8 +227,8 @@ export abstract class FastradeBaseExecutor {
           'user-timezone': this.session.userTimezone ?? 'Asia/Bangkok',
           'Accept': 'application/json, text/plain, */*',
           'Accept-Language': 'id-ID,id;q=0.9',
-          'Origin': 'https://stockity.id',
-          'Referer': 'https://stockity.id/',
+          'Origin': 'https://stockity1.id',
+          'Referer': 'https://stockity1.id/',
           'Cache-Control': 'no-cache, no-store, must-revalidate',
         },
         MAX_PRICE_FETCH_TIME,

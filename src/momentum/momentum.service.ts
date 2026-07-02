@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient } from '../schedule/websocket-client';
@@ -24,7 +24,7 @@ import {
   FETCH_5SEC_OFFSET,
 } from './types';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 
 // FIX #prev-8: 'equal' was missing (StockityHistoryService uses it for draws).
 const TERMINAL_STATUSES = new Set([
@@ -1394,8 +1394,8 @@ export class MomentumService implements OnModuleDestroy {
       'user-timezone':       session.user_timezone || 'Asia/Jakarta',
       'User-Agent':          session.user_agent,
       'Accept':              'application/json, text/plain, */*',
-      'Origin':              'https://stockity.id',
-      'Referer':             'https://stockity.id/',
+      'Origin':              'https://stockity1.id',
+      'Referer':             'https://stockity1.id/',
     };
   }
 

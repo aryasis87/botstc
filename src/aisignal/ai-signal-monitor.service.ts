@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { AISignalConfig, AISignalOrderStatus } from './types';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
@@ -44,7 +44,7 @@ export class AISignalMonitorService implements OnModuleDestroy {
 
   private readonly MONITORING_TIMEOUT_MS = 90_000;
   private readonly WEBSOCKET_PRIORITY_WINDOW_MS = 2000;
-  private readonly BASE_URL = 'https://api.stockity.id';
+  private readonly BASE_URL = 'https://api.stockity1.id';
 
   /**
    * FIX performa: nested Map — O(1) akses per user.
@@ -497,8 +497,8 @@ export class AISignalMonitorService implements OnModuleDestroy {
       'user-timezone':       session.user_timezone ?? 'Asia/Jakarta',
       'User-Agent':          session.user_agent,
       'Accept':              'application/json, text/plain, */*',
-      'Origin':              'https://stockity.id',
-      'Referer':             'https://stockity.id/',
+      'Origin':              'https://stockity1.id',
+      'Referer':             'https://stockity1.id/',
     };
   }
 

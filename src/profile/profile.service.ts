@@ -1,8 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { curlGet } from '../common/http-utils';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 
 @Injectable()
 export class ProfileService {
@@ -46,8 +46,8 @@ export class ProfileService {
       'authorization-token': session.stockity_token,
       'User-Agent': session.user_agent,
       'Accept': 'application/json, text/plain, */*',
-      'Origin': 'https://stockity.id',
-      'Referer': 'https://stockity.id/',
+      'Origin': 'https://stockity1.id',
+      'Referer': 'https://stockity1.id/',
     };
   }
 

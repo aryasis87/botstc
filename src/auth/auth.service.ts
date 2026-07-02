@@ -1,10 +1,10 @@
-import { Injectable, Logger, UnauthorizedException, HttpException, HttpStatus, BadRequestException, OnModuleDestroy } from '@nestjs/common';
+﻿import { Injectable, Logger, UnauthorizedException, HttpException, HttpStatus, BadRequestException, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { SupabaseService } from '../supabase/supabase.service';
 import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -353,8 +353,8 @@ export class AuthService implements OnModuleDestroy {
           'user-timezone': DEFAULT_TIMEZONE,
           'accept':        'application/json, text/plain, */*',
           'User-Agent':    DEFAULT_USER_AGENT,
-          'Origin':        'https://stockity.id',
-          'Referer':       'https://stockity.id/',
+          'Origin':        'https://stockity1.id',
+          'Referer':       'https://stockity1.id/',
         },
         loginProxy,
       );
@@ -451,8 +451,8 @@ export class AuthService implements OnModuleDestroy {
         'authorization-token': stockityAuthToken,
         'User-Agent':          DEFAULT_USER_AGENT,
         'Accept':              'application/json, text/plain, */*',
-        'Origin':              'https://stockity.id',
-        'Referer':             'https://stockity.id/',
+        'Origin':              'https://stockity1.id',
+        'Referer':             'https://stockity1.id/',
       };
       const { curlGet: curlGetFn } = await import('../common/http-utils');
       const resp = await curlGetFn(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 8);
@@ -678,8 +678,8 @@ export class AuthService implements OnModuleDestroy {
       'user-timezone': DEFAULT_TIMEZONE,
       'accept':        'application/json, text/plain, */*',
       'User-Agent':    DEFAULT_USER_AGENT,
-      'Origin':        'https://stockity.id',
-      'Referer':       'https://stockity.id/',
+      'Origin':        'https://stockity1.id',
+      'Referer':       'https://stockity1.id/',
     };
 
     try {
@@ -794,8 +794,8 @@ export class AuthService implements OnModuleDestroy {
           'user-timezone': DEFAULT_TIMEZONE,
           'accept':        'application/json, text/plain, */*',
           'User-Agent':    DEFAULT_USER_AGENT,
-          'Origin':        'https://stockity.id',
-          'Referer':       'https://stockity.id/',
+          'Origin':        'https://stockity1.id',
+          'Referer':       'https://stockity1.id/',
           // Atribusi afiliasi/referral (cookie `a`), sama seperti web client.
           ...(referral ? { 'Cookie': `a=${referral}` } : {}),
         },
@@ -940,8 +940,8 @@ export class AuthService implements OnModuleDestroy {
         'authorization-token': authToken,
         'User-Agent':          DEFAULT_USER_AGENT,
         'Accept':              'application/json, text/plain, */*',
-        'Origin':              'https://stockity.id',
-        'Referer':             'https://stockity.id/',
+        'Origin':              'https://stockity1.id',
+        'Referer':             'https://stockity1.id/',
       };
       const resp = await curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 8);
       const d = resp?.data?.data ?? {};
@@ -1008,8 +1008,8 @@ export class AuthService implements OnModuleDestroy {
         'authorization-token': authToken,
         'User-Agent':          DEFAULT_USER_AGENT,
         'Accept':              'application/json, text/plain, */*',
-        'Origin':              'https://stockity.id',
-        'Referer':             'https://stockity.id/',
+        'Origin':              'https://stockity1.id',
+        'Referer':             'https://stockity1.id/',
       };
       const resp = await curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 8);
       const d = resp?.data?.data ?? {};

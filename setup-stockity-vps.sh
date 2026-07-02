@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 set -e
 
 # ================================================
@@ -375,7 +375,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 const DEFAULT_TIMEZONE = 'Asia/Jakarta';
@@ -572,7 +572,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import axios from 'axios';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 
 @Injectable()
 export class ProfileService {
@@ -594,8 +594,8 @@ export class ProfileService {
       'authorization-token': session.stockityToken,
       'User-Agent': session.userAgent,
       Accept: 'application/json, text/plain, */*',
-      Origin: 'https://stockity.id',
-      Referer: 'https://stockity.id/',
+      Origin: 'https://stockity1.id',
+      Referer: 'https://stockity1.id/',
     };
   }
 
@@ -893,11 +893,11 @@ export class StockityWebSocketClient {
       if (this.isDestroyed) return reject(new Error('Client sudah di-destroy'));
 
       try {
-        this.ws = new WebSocket('wss://ws.stockity.id/?v=2&vsn=2.0.0', {
+        this.ws = new WebSocket('wss://ws.stockity1.id/?v=2&vsn=2.0.0', {
           headers: {
             'User-Agent': this.userAgent,
             'Sec-WebSocket-Protocol': 'phoenix',
-            Origin: 'https://stockity.id',
+            Origin: 'https://stockity1.id',
             'Cache-Control': 'no-cache',
             Pragma: 'no-cache',
           },

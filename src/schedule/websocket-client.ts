@@ -1,4 +1,4 @@
-import WebSocket = require('ws');
+﻿import WebSocket = require('ws');
 import { Logger } from '@nestjs/common';
 import { TradeOrderData } from './types';
 
@@ -68,15 +68,15 @@ export class StockityWebSocketClient {
       const doReject = (err: Error) => { if (!settled) { settled = true; reject(err); } };
 
       try {
-        this.ws = new WebSocket('wss://ws.stockity.id/?v=2&vsn=2.0.0', {
+        this.ws = new WebSocket('wss://ws.stockity1.id/?v=2&vsn=2.0.0', {
           headers: {
             'authorization-token': this.authToken,
             'device-id': this.deviceId,
             'device-type': this.deviceType,
             'user-timezone': 'Asia/Jakarta',
             'User-Agent': this.userAgent,
-            'Origin': 'https://stockity.id',
-            'Referer': 'https://stockity.id/',
+            'Origin': 'https://stockity1.id',
+            'Referer': 'https://stockity1.id/',
             'Cookie': `authtoken=${this.authToken}; device_type=${this.deviceType}; device_id=${this.deviceId}`,
             'Cache-Control': 'no-cache',
           },

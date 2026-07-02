@@ -1,4 +1,4 @@
-// src/today-profit/stockity-history.service.ts
+﻿// src/today-profit/stockity-history.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { curlGet } from '../common/http-utils';
 
@@ -38,7 +38,7 @@ export interface StockityCredentials {
   timezone?: string;    // default 'Asia/Jakarta'
 }
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 const MAX_PAGES = 20; // Safety cap — 20 pages × 30 deals = 600 trades/day max
 
 @Injectable()
@@ -153,8 +153,8 @@ export class StockityHistoryService {
       'user-timezone':       creds.timezone ?? 'Asia/Jakarta',
       'cache-control':       'no-cache, no-store, must-revalidate',
       'accept':              'application/json, text/plain, */*',
-      'origin':              'https://stockity.id',
-      'referer':             'https://stockity.id/',
+      'origin':              'https://stockity1.id',
+      'referer':             'https://stockity1.id/',
       'user-agent':          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     };
   }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
@@ -16,7 +16,7 @@ import {
   DEFAULT_INDICATOR_SETTINGS,
 } from './types';
 
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 const HISTORICAL_CANDLES_COUNT = 180;
 const MINUTE_BOUNDARY_OFFSET_MS = 100;
 const CANDLE_INTERVAL_MS = 60000;
@@ -1245,8 +1245,8 @@ export class IndicatorService implements OnModuleDestroy {
         'user-timezone': session.user_timezone || 'Asia/Jakarta',
         'User-Agent': session.user_agent,
         'Accept': 'application/json, text/plain, */*',
-        'Origin': 'https://stockity.id',
-        'Referer': 'https://stockity.id/',
+        'Origin': 'https://stockity1.id',
+        'Referer': 'https://stockity1.id/',
       };
 
       const response = await curlGet(
@@ -1423,8 +1423,8 @@ export class IndicatorService implements OnModuleDestroy {
       'user-timezone': session.user_timezone || 'Asia/Jakarta',
       'User-Agent': session.user_agent,
       'Accept': 'application/json, text/plain, */*',
-      'Origin': 'https://stockity.id',
-      'Referer': 'https://stockity.id/',
+      'Origin': 'https://stockity1.id',
+      'Referer': 'https://stockity1.id/',
     };
   }
 

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+﻿import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AuthService } from '../auth/auth.service';
 import { OrderTrackingService } from './order-tracking.service';
@@ -10,7 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
 
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
-const BASE_URL = 'https://api.stockity.id';
+const BASE_URL = 'https://api.stockity1.id';
 
 /**
  * Debounce interval untuk saveOrders (onOrdersUpdate callback).
@@ -203,7 +203,7 @@ export class ScheduleService implements OnModuleInit, OnModuleDestroy {
         const typeName = TYPE_NAME_MAPPING[assetType] ?? `Type-${assetType}`;
         let iconUrl: string | null = asset.icon?.url ?? null;
         if (iconUrl && !iconUrl.startsWith('http')) {
-          iconUrl = `https://stockity.id${iconUrl.startsWith('/') ? '' : '/'}${iconUrl}`;
+          iconUrl = `https://stockity1.id${iconUrl.startsWith('/') ? '' : '/'}${iconUrl}`;
         }
 
         let profitRate: number | null = null;
@@ -252,8 +252,8 @@ export class ScheduleService implements OnModuleInit, OnModuleDestroy {
       'user-timezone':       session.user_timezone   || 'Asia/Jakarta',
       'User-Agent':          session.user_agent      || 'Mozilla/5.0',
       'Accept': 'application/json, text/plain, */*',
-      'Origin': 'https://stockity.id',
-      'Referer': 'https://stockity.id/',
+      'Origin': 'https://stockity1.id',
+      'Referer': 'https://stockity1.id/',
     };
   }
 
