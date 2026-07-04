@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import helmet from 'helmet';
+import type { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
 
 /**
@@ -54,6 +55,16 @@ async function bootstrap() {
       crossOriginResourcePolicy: false,
     }),
   );
+
+  // ── SEO guard ─────────────────────────────────────────────────────────────
+  // api.stcautotrade.id adalah API murni — tidak boleh muncul di indeks Google.
+  // X-Robots-Tag berlaku untuk SEMUA respons (JSON, error, 404) tanpa perlu
+  // robots.txt, dan tetap efektif meski URL endpoint tersebar di luar.
+  // Situs yang diindeks hanya https://stcautotrade.id (webstc).
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    next();
+  });
 
   const corsOrigins = buildCorsOrigins();
   app.enableCors({
