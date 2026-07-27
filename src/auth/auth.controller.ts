@@ -69,4 +69,14 @@ export class AuthController {
   getMe(@Request() req) {
     return this.authService.getMe(req.user.userId);
   }
+
+  /**
+   * v4: authtoken Stockity milik pemanggil — dibutuhkan engine di perangkat
+   * untuk membuka WebSocket Stockity sendiri (tanpa VPS).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('stockity-token')
+  getStockityToken(@Request() req) {
+    return this.authService.getStockityToken(req.user.userId);
+  }
 }

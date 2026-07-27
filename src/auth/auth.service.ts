@@ -1148,6 +1148,26 @@ export class AuthService implements OnModuleDestroy {
     return { message: 'Logout berhasil' };
   }
 
+  /**
+   * v4: kembalikan authtoken Stockity milik pemanggil agar engine di PERANGKAT
+   * bisa membuka WebSocket Stockity sendiri (handshake mewajibkan header
+   * `authorization-token`; aplikasi hanya menyimpan JWT app, bukan token ini).
+   * Dilindungi JwtAuthGuard — userId diambil dari JWT, bukan dari input.
+   */
+  async getStockityToken(userId: string): Promise<{ token: string; deviceId: string }> {
+    const cached = this.getCachedSession(userId);
+    const row = cached ?? (await this.supabaseService.client
+      .from('sessions')
+      .select('stockity_token, device_id, logged_out_at')
+      .eq('user_id', userId)
+      .maybeSingle()).data;
+
+    if (!row?.stockity_token) throw new UnauthorizedException('Sesi Stockity tidak ditemukan — silakan login ulang');
+    if (row.logged_out_at)    throw new UnauthorizedException('Sesi sudah logout — silakan login ulang');
+
+    return { token: row.stockity_token, deviceId: row.device_id ?? '' };
+  }
+
   async getMe(userId: string) {
     const cached = this.getCachedSession(userId);
     if (cached) {
