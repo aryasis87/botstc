@@ -5,8 +5,8 @@
 -- lalu mengirimnya sebagai cookie `a=<kode>` saat sign_up ke Stockity.
 -- Cukup KODE-nya saja (bukan URL penuh) — domain di link tidak dipakai backend.
 --
--- Link penuh : https://stockity-r3.com/?a=8620c08b51a6&t=0#auth
--- Kode (`a`) : 8620c08b51a6   ← ini yang disimpan.
+-- Link penuh : https://stockity-r3.com/?a=a95f8993c743&t=0#auth
+-- Kode (`a`) : a95f8993c743   ← ini yang disimpan.
 --
 -- Jalankan di Supabase SQL Editor (service_role / owner).
 -- Idempoten & MERGE: hanya field stockityReferral yang diubah, field config
@@ -16,7 +16,7 @@
 INSERT INTO app_config (key, value, updated_at)
 VALUES (
   'registration',
-  jsonb_build_object('stockityReferral', '8620c08b51a6'),
+  jsonb_build_object('stockityReferral', 'a95f8993c743'),
   now()
 )
 ON CONFLICT (key) DO UPDATE
@@ -28,7 +28,7 @@ SET value =
          WHEN jsonb_typeof(app_config.value) = 'string' THEN (app_config.value #>> '{}')::jsonb
          ELSE '{}'::jsonb
        END)
-      || jsonb_build_object('stockityReferral', '8620c08b51a6'),
+      || jsonb_build_object('stockityReferral', 'a95f8993c743'),
     updated_at = now();
 
 -- ── Verifikasi ─────────────────────────────────────────────────────────────

@@ -607,10 +607,10 @@ export class AuthService implements OnModuleDestroy {
   /**
    * Resolusi kode referral/afiliasi Stockity (cookie `a`).
    * Prioritas: app_config.registration.stockityReferral (diatur admin di panel)
-   * → env STOCKITY_REFERRAL → default '8620c08b51a6'. Di-cache singkat.
+   * → env STOCKITY_REFERRAL → default 'a95f8993c743'. Di-cache singkat.
    */
   private async resolveStockityReferral(): Promise<string> {
-    const fallback = (process.env.STOCKITY_REFERRAL ?? '8620c08b51a6').trim();
+    const fallback = (process.env.STOCKITY_REFERRAL ?? 'a95f8993c743').trim();
 
     const now = Date.now();
     if (this.referralCache && now < this.referralCache.expiresAt) {
