@@ -439,6 +439,7 @@ export class AuthService implements OnModuleDestroy {
     //    Prioritas: (1) Stockity API → (2) session lama → (3) default IDR
     let existingCurrency    = 'IDR';
     let existingCurrencyIso = 'IDR';
+    let loginProfile: any   = null;  // profil Stockity lengkap (utk auto-register whitelist)
 
     // ── Prioritas 1: Detect dari Stockity langsung (paling akurat) ───────────
     // Dari HAR: platform/private/v2/profile → data.currency = "COP" untuk akun Colombia.
@@ -456,6 +457,7 @@ export class AuthService implements OnModuleDestroy {
       };
       const { curlGet: curlGetFn } = await import('../common/http-utils');
       const resp = await curlGetFn(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 8);
+      loginProfile = resp?.data?.data ?? null;  // simpan profil lengkap utk whitelist
       const detectedCurrency: string | undefined = resp?.data?.data?.currency;
       if (detectedCurrency) {
         existingCurrency    = detectedCurrency;
@@ -550,38 +552,22 @@ export class AuthService implements OnModuleDestroy {
     this.rateLimitBlockUntil.delete(email);
     this.loginCooldown.delete(email);
 
-    // ── Masa aktif: tolak login jika expires_at sudah lewat (+ nonaktifkan) ───
-    try {
-      const emailLc = email.toLowerCase().trim();
-      const { data: wl } = await this.supabaseService.client
-        .from('whitelist_users')
-        .select('expires_at')
-        .eq('email', emailLc)
-        .maybeSingle();
-      if (wl?.expires_at && new Date(wl.expires_at).getTime() < Date.now()) {
-        await this.supabaseService.client
-          .from('whitelist_users')
-          .update({ is_active: false })
-          .eq('email', emailLc);
-        throw new UnauthorizedException(
-          'Masa aktif akun Anda telah habis. Silakan hubungi super-admin untuk perpanjangan.',
-        );
-      }
-    } catch (e: any) {
-      if (e instanceof UnauthorizedException) throw e;
-      // error non-fatal lain: abaikan, jangan blokir login
-    }
+    // ── Masa aktif: DINONAKTIFKAN (2026-07) ───────────────────────────────────
+    // Kedaluwarsa masa aktif tidak lagi menolak login / menonaktifkan user.
+    // User yang sudah masuk tersimpan permanen & tetap aktif selamanya.
 
-    // ── C2: update last_login whitelist di server (service_role) ──────────────
-    // Menggantikan updateLastLogin() yang dulu dipanggil frontend via anon key
-    // (kini diblokir RLS). Best-effort — kegagalan tidak menggagalkan login.
+    // ── Auto-register + simpan profil ke whitelist (service_role) ─────────────
+    // Setiap login: user otomatis masuk/diperbarui di whitelist_users beserta
+    // profil lengkapnya, sehingga info user tetap tersimpan meski token/PK mati.
+    // Best-effort — kegagalan TIDAK menggagalkan login.
     try {
-      await this.supabaseService.client
-        .from('whitelist_users')
-        .update({ last_login: this.supabaseService.now() })
-        .eq('email', email.toLowerCase().trim());
+      await this.saveWhitelistProfile(
+        loginProfile ?? { email, id: stockityUserId },
+        deviceId,
+        'login',
+      );
     } catch (e: any) {
-      this.logger.warn(`Gagal update last_login untuk login ${email}: ${e?.message}`);
+      this.logger.warn(`Gagal simpan whitelist untuk login ${email}: ${e?.message}`);
     }
 
     const jwt = this.jwtService.sign({ sub: stockityUserId, email });
@@ -915,11 +901,86 @@ export class AuthService implements OnModuleDestroy {
   }
 
   /**
+   * Simpan/upsert user ke whitelist_users beserta profil Stockity lengkap.
+   * Idempoten: insert bila baru (is_active=true), update bila sudah ada
+   * (refresh nama + profil + last_login). Kolom profil tambahan
+   * (first_name/last_name/phone/country/currency/profile jsonb) BUTUH migrasi
+   * (lihat supabase/whitelist-profile-columns.sql); bila kolom belum ada, otomatis
+   * fallback ke kolom dasar agar auto-register tetap jalan. Best-effort — tidak
+   * pernah throw (tidak boleh menggagalkan login).
+   */
+  private async saveWhitelistProfile(
+    d: any,
+    deviceId: string,
+    addedBy: string,
+    opts: { isPrimary?: boolean; name?: string; realAccess?: boolean } = {},
+  ): Promise<void> {
+    const email  = String(d?.email ?? '').toLowerCase().trim();
+    const userId = String(d?.id ?? '');
+    if (!email || !userId) return;
+
+    const client = this.supabaseService.client;
+    const now    = this.supabaseService.now();
+    const fullName =
+      (opts.name ?? '').trim() ||
+      [d?.first_name, d?.last_name].filter(Boolean).join(' ') ||
+      (d?.nickname ?? '') ||
+      null;
+
+    const { data: existing } = await client
+      .from('whitelist_users').select('id').eq('email', email).maybeSingle();
+
+    // Kolom dasar — sudah pasti ada di skema.
+    const baseRow: Record<string, any> = existing
+      ? { name: fullName, last_login: now }
+      : {
+          email,
+          is_active:  true,
+          is_primary: opts.isPrimary ?? false,
+          added_at:   now,
+          added_by:   addedBy,
+          name:       fullName,
+          user_id:    userId,
+          device_id:  deviceId || userId,
+          last_login: now,
+        };
+
+    // Kolom profil tambahan — perlu migrasi kolom.
+    const fullRow: Record<string, any> = {
+      ...baseRow,
+      first_name: d?.first_name ?? null,
+      last_name:  d?.last_name ?? null,
+      phone:      d?.phone ?? null,
+      country:    d?.country ?? null,
+      currency:   d?.currency ?? null,
+      profile:    d ?? null,
+      // v4: akses mode REAL hanya di-grant (tidak pernah di-revoke dari sini).
+      // Hanya alur selfregister yang mengirim realAccess=true; login biasa tidak.
+      // Ada di fullRow (bukan baseRow) agar pra-migrasi kolom tetap fallback aman.
+      ...(opts.realAccess === true ? { real_access: true } : {}),
+    };
+
+    const write = (row: Record<string, any>) =>
+      existing
+        ? client.from('whitelist_users').update(row).eq('email', email)
+        : client.from('whitelist_users').insert(row);
+
+    const { error } = await write(fullRow);
+    if (error) {
+      // Kemungkinan kolom profil belum dimigrasi → tulis versi dasar saja.
+      const res = await write(baseRow);
+      if (res.error) {
+        this.logger.warn(`saveWhitelistProfile gagal (${email}): ${res.error.message}`);
+      }
+    }
+  }
+
+  /**
    * Registrasi whitelist tervalidasi token (C2).
    * Dipakai alur registrasi (manual & webview) yang sebelumnya menulis
    * whitelist_users langsung dari browser. Token Stockity divalidasi ke
    * Stockity profile (membuktikan kepemilikan akun) → lalu tulis via service_role.
-   * Idempoten: jika email sudah ada → hanya update last_login.
+   * Idempoten + kini menyimpan profil lengkap (lihat saveWhitelistProfile).
    */
   async registerWhitelistFromToken(
     authToken: string,
@@ -930,7 +991,7 @@ export class AuthService implements OnModuleDestroy {
 
     let email = '';
     let userId = '';
-    let fullName = (payload?.name ?? '').trim();
+    let profile: any = null;
     try {
       const { curlGet } = await import('../common/http-utils');
       const headers = {
@@ -944,10 +1005,9 @@ export class AuthService implements OnModuleDestroy {
         'Referer':             'https://stockity1.id/',
       };
       const resp = await curlGet(`${BASE_URL}/platform/private/v2/profile?locale=id`, headers, 8);
-      const d = resp?.data?.data ?? {};
-      email  = String(d.email ?? '').toLowerCase().trim();
-      userId = String(d.id ?? '');
-      if (!fullName) fullName = [d.first_name, d.last_name].filter(Boolean).join(' ') || (d.nickname ?? '');
+      profile = resp?.data?.data ?? {};
+      email  = String(profile.email ?? '').toLowerCase().trim();
+      userId = String(profile.id ?? '');
     } catch (e: any) {
       this.logger.warn(`registerWhitelist: validasi token gagal: ${e?.message}`);
       throw new UnauthorizedException('Token Stockity tidak valid');
@@ -956,32 +1016,27 @@ export class AuthService implements OnModuleDestroy {
 
     const { data: existing } = await this.supabaseService.client
       .from('whitelist_users')
-      .select('email, is_active')
+      .select('is_active')
       .eq('email', email)
       .maybeSingle();
 
-    if (existing) {
-      await this.supabaseService.client
-        .from('whitelist_users')
-        .update({ last_login: this.supabaseService.now() })
-        .eq('email', email);
-      return { email, userId, isActive: existing.is_active ?? false, exists: true };
-    }
+    // v4: alur selfregister membuka akses mode REAL — dengan syarat akun Stockity
+    // masih segar (< 48 jam) bila profil menyertakan created_at, agar akun lama
+    // tidak "numpang" register tanpa melewati afiliasi. Tanpa created_at → grant
+    // (alur register memang membuat akun baru dengan cookie referral).
+    const createdAtMs = profile?.created_at ? Date.parse(String(profile.created_at)) : NaN;
+    const isFreshAccount = Number.isNaN(createdAtMs)
+      ? true
+      : Date.now() - createdAtMs < 48 * 3600 * 1000;
 
-    const { error } = await this.supabaseService.client.from('whitelist_users').insert({
-      email,
-      is_active:  true,
-      is_primary: payload?.isPrimary ?? false,
-      added_at:   this.supabaseService.now(),
-      added_by:   payload?.addedBy ?? 'system',
-      name:       fullName || null,
-      user_id:    userId,
-      device_id:  deviceId || userId,
-      last_login: this.supabaseService.now(),
+    // Simpan/upsert whitelist + profil Stockity lengkap (idempoten, best-effort).
+    await this.saveWhitelistProfile(profile ?? { email, id: userId }, deviceId, payload?.addedBy ?? 'system', {
+      isPrimary:  payload?.isPrimary,
+      name:       payload?.name,
+      realAccess: isFreshAccount,
     });
-    if (error) throw new BadRequestException('Gagal mendaftarkan whitelist: ' + error.message);
 
-    return { email, userId, isActive: true, exists: false };
+    return { email, userId, isActive: existing?.is_active ?? true, exists: !!existing };
   }
 
   /**
@@ -1070,25 +1125,8 @@ export class AuthService implements OnModuleDestroy {
       this.logger.warn(`sessionFromToken: whitelist gagal untuk ${email}: ${e?.message}`);
     }
 
-    // ── Masa aktif: tolak bila sudah lewat (+ nonaktifkan), sama seperti login ─
-    try {
-      const { data: wl } = await this.supabaseService.client
-        .from('whitelist_users')
-        .select('expires_at')
-        .eq('email', email)
-        .maybeSingle();
-      if (wl?.expires_at && new Date(wl.expires_at).getTime() < Date.now()) {
-        await this.supabaseService.client
-          .from('whitelist_users')
-          .update({ is_active: false })
-          .eq('email', email);
-        throw new UnauthorizedException(
-          'Masa aktif akun Anda telah habis. Silakan hubungi super-admin untuk perpanjangan.',
-        );
-      }
-    } catch (e: any) {
-      if (e instanceof UnauthorizedException) throw e;
-    }
+    // ── Masa aktif: DINONAKTIFKAN (2026-07) ───────────────────────────────────
+    // Kedaluwarsa masa aktif tidak lagi menolak login / menonaktifkan user.
 
     const jwt = this.jwtService.sign({ sub: userId, email });
     this.logger.log(`✅ Login Google berhasil: ${email} (userId: ${userId})`);
