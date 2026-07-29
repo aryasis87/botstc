@@ -55,21 +55,10 @@ export class AdminController {
     return this.svc.updateWhitelist(oldEmail, updates, { email: req.user.email, isSuper: isSuperAdmin });
   }
 
-  @UseGuards(AdminGuard)
-  @Post('whitelist/toggle')
-  @HttpCode(200)
-  async toggleWhitelist(@Request() req, @Body() body: { email: string; isActive: boolean }) {
-    const { isSuperAdmin } = await this.svc.getMe(req.user.email);
-    return this.svc.toggleWhitelist(body.email, body.isActive, { email: req.user.email, isSuper: isSuperAdmin });
-  }
-
-  @UseGuards(AdminGuard)
-  @Delete('whitelist')
-  @HttpCode(200)
-  async deleteWhitelist(@Request() req, @Query('id') id: string, @Body() body?: { id?: string }) {
-    const { isSuperAdmin } = await this.svc.getMe(req.user.email);
-    return this.svc.deleteWhitelist(id ?? body?.id ?? '', { email: req.user.email, isSuper: isSuperAdmin });
-  }
+  // Fitur nonaktifkan & hapus user DIHAPUS (2026-07): admin/super_admin tidak
+  // boleh lagi menonaktifkan atau menghapus data user — user yang sudah masuk
+  // tersimpan permanen. Endpoint whitelist/toggle & DELETE whitelist ditiadakan,
+  // dan updateWhitelist mengabaikan field isActive (lihat admin.service.ts).
 
   @UseGuards(AdminGuard)
   @Post('whitelist/import')

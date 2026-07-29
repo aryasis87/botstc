@@ -90,7 +90,8 @@ export class AdminService {
     if (updates.userId   !== undefined) data.user_id   = updates.userId;
     if (updates.deviceId !== undefined) data.device_id = updates.deviceId;
     if (updates.email    !== undefined) data.email     = updates.email.toLowerCase().trim();
-    if (updates.isActive !== undefined) data.is_active = updates.isActive;
+    // isActive SENGAJA diabaikan: menonaktifkan user via edit sudah ditiadakan
+    // (2026-07). User yang sudah masuk tersimpan permanen & tetap aktif.
     if (updates.lastLogin !== undefined) {
       data.last_login = updates.lastLogin === 0 || updates.lastLogin === null
         ? null : new Date(updates.lastLogin).toISOString();
@@ -100,36 +101,16 @@ export class AdminService {
     if (error) throw new BadRequestException('Gagal mengupdate whitelist: ' + error.message);
   }
 
-  async toggleWhitelist(email: string, isActive: boolean, requester?: RequesterCtx): Promise<void> {
-    await this.assertOwner(email, requester);
-    const { error } = await this.db.from('whitelist_users')
-      .update({ is_active: isActive }).eq('email', email.toLowerCase().trim());
-    if (error) throw new BadRequestException('Gagal mengupdate status: ' + error.message);
-  }
-
-  async deleteWhitelist(emailOrId: string, requester?: RequesterCtx): Promise<void> {
-    const normalized = emailOrId.toLowerCase().trim();
-    // Tentukan dulu apakah target ada by email atau by id, lalu cek kepemilikan.
-    const { data: byEmail } = await this.db
-      .from('whitelist_users').select('id').eq('email', normalized).maybeSingle();
-    if (byEmail) {
-      await this.assertOwner(normalized, requester);
-      const { error } = await this.db.from('whitelist_users').delete().eq('email', normalized);
-      if (error) throw new BadRequestException('Gagal menghapus whitelist: ' + error.message);
-      return;
-    }
-    // Fallback by id
-    await this.assertOwner(emailOrId, requester, true);
-    const { error: idErr } = await this.db.from('whitelist_users').delete().eq('id', emailOrId);
-    if (idErr) throw new BadRequestException('Gagal menghapus whitelist: ' + idErr.message);
-  }
+  // toggleWhitelist() & deleteWhitelist() DIHAPUS (2026-07): admin/super_admin
+  // tidak boleh lagi menonaktifkan atau menghapus data user.
 
   async importWhitelist(rows: any[], addedBy: string): Promise<{ success: number; skipped: number }> {
     if (!Array.isArray(rows) || rows.length === 0) return { success: 0, skipped: 0 };
     let success = 0, skipped = 0;
     const mapped = rows.map((u) => ({
       email:      ((u.email ?? '') as string).toLowerCase().trim(),
-      is_active:  u.isActive ?? u.is_active ?? true,
+      // Selalu aktif: import tidak boleh jadi celah membuat user nonaktif.
+      is_active:  true,
       added_at:   u.createdAt ? new Date(u.createdAt).toISOString() : new Date().toISOString(),
       added_by:   addedBy ?? u.addedBy ?? u.added_by ?? 'system',
       name:       u.name ?? null,

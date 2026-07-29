@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AuthService } from '../auth/auth.service';
-import { PushNotificationService, PushMessage } from '../supabase/push-notification.service';
 import { TelegramSignalService } from './telegram-signal.service';
 import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { AISignalMonitorService } from './ai-signal-monitor.service';
@@ -74,7 +73,6 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly authService: AuthService,
-    private readonly pushNotification: PushNotificationService,
     private readonly aiSignalMonitor: AISignalMonitorService,
     private readonly telegramSignalService: TelegramSignalService,
   ) {}
@@ -441,50 +439,9 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
       `${new Date(signal.executionTime).toISOString()}`,
     );
 
-    await this.sendSignalToFCM(userId, signal, order);
     return { message: `Signal received: ${signal.trend.toUpperCase()}` };
   }
 
-  private async sendSignalToFCM(
-    userId: string,
-    signal: TelegramSignal,
-    order: AISignalOrder,
-  ): Promise<void> {
-    try {
-      const d      = new Date(signal.executionTime);
-      const hour   = d.getHours();
-      const minute = d.getMinutes();
-      const second = d.getSeconds();
-      const topic  = `trading_signals_${userId}`;
-
-      const message: PushMessage = {
-        topic,
-        data: {
-          type: 'TRADING_SIGNAL',
-          trend: signal.trend,
-          has_time: 'true',
-          hour: hour.toString(), minute: minute.toString(), second: second.toString(),
-          original_message: signal.originalMessage,
-          timestamp: signal.receivedAt.toString(),
-          user_id:  userId,
-          order_id: order.id,
-        },
-        notification: {
-          title: '🎯 New Trading Signal',
-          body:  `${signal.trend.toUpperCase()}: ${signal.originalMessage} (${hour}:${minute}:${second})`,
-        },
-        android: {
-          priority: 'high' as const,
-          notification: { channelId: 'trading_signals', priority: 'high' as const, sound: 'default' },
-        },
-      };
-
-      await this.pushNotification.send(message);
-      this.logger.log(`[${userId}] FCM sent to topic '${topic}'`);
-    } catch (err: any) {
-      this.logger.debug(`[${userId}] FCM send skipped: ${err?.message ?? err}`);
-    }
-  }
 
   /**
    * FIX sesi 1: parameter `session` dihapus karena tidak dipakai.
