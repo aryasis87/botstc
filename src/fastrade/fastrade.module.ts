@@ -8,5 +8,6 @@ import { AuthModule } from '../auth/auth.module';
   imports: [SupabaseModule, AuthModule],
   controllers: [FastradeController],
   providers: [FastradeService],
+  exports: [FastradeService],
 })
 export class FastradeModule {}

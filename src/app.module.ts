@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { UserThrottlerGuard } from './common/user-throttler.guard';
+import { AutoStopService } from './common/auto-stop.service';
 import { SupabaseModule } from './supabase/supabase.module';
 import { AuthModule } from './auth/auth.module';
 import { ProfileModule } from './profile/profile.module';
@@ -40,6 +41,8 @@ import { AdminModule } from './admin/admin.module';
   providers: [
     // Guard throttle global — per-user (token) / per-IP (anonim).
     { provide: APP_GUARD, useClass: UserThrottlerGuard },
+    // Auto-stop mode yang berjalan > AUTO_STOP_MAX_HOURS (default 24 jam).
+    AutoStopService,
   ],
 })
 export class AppModule {}
