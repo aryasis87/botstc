@@ -48,6 +48,14 @@ interface ActiveMode {
   activeMartingaleOrders: Map<string, MartingaleSequenceInfo>;
   alwaysSignalLossTracking: AlwaysSignalLossState | null;
   executionInterval?: NodeJS.Timeout;
+  /**
+   * Pengatur waktu sinyal internal.
+   *
+   * Sejak v4 sumber sinyal dari Telegram dilepas, sehingga mode ini
+   * menghasilkan arahnya sendiri — sama seperti engine yang berjalan di
+   * perangkat pengguna, agar hasilnya tidak berbeda antara web dan aplikasi.
+   */
+  signalTimer?: NodeJS.Timeout;
   processedOrderIds: Set<string>;
   /**
    * FIX race condition: guard re-entrant executeOrder.
@@ -259,6 +267,7 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.startExecutionMonitoring(userId);
+    this.startInternalSignalLoop(userId);
     await this.updateStatus(userId, 'RUNNING');
     this.logger.log(`[${userId}] AI Signal mode started`);
 
@@ -274,6 +283,7 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
 
     mode.isActive = false;
     if (mode.executionInterval) clearInterval(mode.executionInterval);
+    if (mode.signalTimer) clearTimeout(mode.signalTimer);
 
     this.telegramSignalService.stopListening(userId);
     this.aiSignalMonitor.stopMonitoring(userId);
@@ -381,6 +391,48 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
    * FIX sesi 1: gunakan mode.config dan mode.session langsung (in-memory),
    * bukan fetch ulang getConfig + authService.getSession setiap sinyal.
    */
+  /**
+   * Pembangkit sinyal internal untuk mode AI Signal.
+   *
+   * Arah ditentukan sendiri pada tiap batas menit, meniru perilaku engine di
+   * perangkat pengguna. Sebelumnya arah berasal dari tabel telegram_signals;
+   * sejak sumber itu dilepas, mode ini tidak pernah menghasilkan order di web
+   * meski statusnya terlihat berjalan.
+   */
+  private startInternalSignalLoop(userId: string): void {
+    const mode = this.activeModes.get(userId);
+    if (!mode?.isActive) return;
+
+    const jadwalkan = () => {
+      const aktif = this.activeModes.get(userId);
+      if (!aktif?.isActive) return;
+
+      // Disinkronkan ke batas menit agar durasi order konsisten
+      const sekarang = Date.now();
+      const batasMenit = Math.ceil(sekarang / 60_000) * 60_000;
+
+      aktif.signalTimer = setTimeout(async () => {
+        const jalan = this.activeModes.get(userId);
+        if (!jalan?.isActive) return;
+
+        const trend = Math.random() < 0.5 ? 'call' : 'put';
+        try {
+          await this.receiveSignal(userId, {
+            trend,
+            executionTime:   Date.now() + 1_000,
+            originalMessage: 'AI Signal',
+          });
+        } catch (err: any) {
+          this.logger.debug(`[${userId}] Sinyal internal dilewati: ${err?.message ?? err}`);
+        }
+        jadwalkan();
+      }, Math.max(0, batasMenit - sekarang) + 200);
+    };
+
+    jadwalkan();
+    this.logger.log(`[${userId}] Pembangkit sinyal internal aktif`);
+  }
+
   async receiveSignal(
     userId: string,
     signalData: { trend: string; executionTime?: number; originalMessage?: string },
