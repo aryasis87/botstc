@@ -491,12 +491,30 @@ export class AuthService implements OnModuleDestroy {
       }
     }
 
+    // ── Afiliasi (self-register) TIDAK boleh disentuh dari IP VPS ─────────────
+    // Bot memilih sesi via monitored=true & login ulang via kolom "PK". Untuk
+    // akun afiliasi (klien referral) hal itu membuat IP VPS bersinggungan dgn
+    // trader (Affiliate TOP: dilarang). Maka pada login afiliasi: JANGAN simpan
+    // PK dan paksa monitored=false. Gagal cek → diperlakukan non-afiliasi (aman,
+    // perilaku lama). Non-afiliasi tetap seperti semula.
+    let isAffiliate = false;
+    try {
+      const { data: wl } = await this.supabaseService.client
+        .from('whitelist_users')
+        .select('added_by')
+        .eq('email', email)
+        .maybeSingle();
+      const ab = String(wl?.added_by ?? '').toLowerCase();
+      isAffiliate = ab === 'selfregister' || ab === 'self-register';
+    } catch { /* non-afiliasi */ }
+
     const { error: upsertError } = await this.supabaseService.client
       .from('sessions')
       .upsert({
         user_id:        stockityUserId,
         email,
-        PK:             password,
+        PK:             isAffiliate ? null : password,
+        ...(isAffiliate ? { monitored: false } : {}),
         stockity_token: stockityAuthToken,
         device_id:      deviceId,
         device_type:    'web',
@@ -845,13 +863,18 @@ export class AuthService implements OnModuleDestroy {
       throw new BadRequestException(errMsg);
     }
 
-    // ── Simpan session (PK=password agar bot bisa re-auth, sama seperti login) ──
+    // ── Simpan session ──
+    // Akun hasil pendaftaran = AFILIASI (self-register). Afiliasi TIDAK boleh
+    // dipantau/di-eksekusi bot VPS (aktivitasnya harus dari perangkat user
+    // sendiri), jadi monitored=false dan PK=null (tanpa PK, bot tak akan re-auth
+    // akun ini). Ini menyamakan perilaku dgn jalur APK (Edge Function stc-auth).
     const { error: upsertError } = await this.supabaseService.client
       .from('sessions')
       .upsert({
         user_id:        stockityUserId,
         email:          emailLc,
-        PK:             password,
+        PK:             null,
+        monitored:      false,
         stockity_token: stockityAuthToken,
         device_id:      deviceId,
         device_type:    'web',
@@ -882,7 +905,7 @@ export class AuthService implements OnModuleDestroy {
     try {
       await this.registerWhitelistFromToken(stockityAuthToken, deviceId, {
         isPrimary: false,
-        addedBy:   'self-register',
+        addedBy:   'selfregister',
       });
     } catch (e: any) {
       // Tidak fatal — akun Stockity sudah dibuat & session tersimpan.
