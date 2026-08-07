@@ -116,6 +116,24 @@ export class AuthService implements OnModuleDestroy {
    * Redaksi data sensitif sebelum masuk log (M6): token, UUID, email, password.
    * Mencegah PII/kredensial bocor ke logs/out.log.
    */
+  /**
+   * Apakah respons galat Stockity menandakan akun memakai autentikasi 2FA?
+   * Penanda dicari pada seluruh isi respons (kode, field, maupun pesan) karena
+   * Stockity memakai beberapa bentuk penamaan untuk hal yang sama.
+   */
+  private isTwoFactorError(body: any): boolean {
+    try {
+      const raw = (typeof body === 'string' ? body : JSON.stringify(body ?? {})).toLowerCase();
+      if (!raw) return false;
+      return (
+        raw.includes('two_factor') || raw.includes('two-factor') || raw.includes('twofactor') ||
+        raw.includes('2fa') || raw.includes('otp') ||
+        raw.includes('authenticator') || raw.includes('totp') ||
+        raw.includes('verification code') || raw.includes('kode verifikasi')
+      );
+    } catch { return false; }
+  }
+
   private redact(s: string): string {
     return s
       .replace(/("?(?:authtoken|authorization-token|stockity_token|token|password|PK)"?\s*[:=]\s*)"?[^",}\s]+"?/gi, '$1"<REDACTED>"')
@@ -374,6 +392,18 @@ export class AuthService implements OnModuleDestroy {
             body?.errors?.[0]?.message          ||
             'Terlalu banyak percobaan login dari server. Coba lagi dalam beberapa menit.';
           throw new HttpException(errMsg, HttpStatus.TOO_MANY_REQUESTS);
+        }
+
+        // ── 2FA ─────────────────────────────────────────────────────────────
+        // Galat 2FA datang pada status yang sama dengan kata sandi salah,
+        // sehingga sebelumnya SELALU terbaca "Email atau password salah" dan
+        // pengguna tidak tahu harus menonaktifkan 2FA lebih dulu. Diperiksa
+        // sebelum pesan umum. (Penanda dicari luas: Stockity memakai beberapa
+        // bentuk — otp / token / two_factor / authenticator.)
+        if (this.isTwoFactorError(body)) {
+          throw new UnauthorizedException(
+            'Akun anda mengaktifkan autentikasi 2FA, mohon dinonaktifkan.',
+          );
         }
 
         const errMsg: string =
