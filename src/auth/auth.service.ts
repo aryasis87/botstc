@@ -814,6 +814,17 @@ export class AuthService implements OnModuleDestroy {
     const emailLc = email.toLowerCase().trim();
     this.logger.log(`Register attempt: ${emailLc}`);
 
+    // ── PENDAFTARAN LEWAT SERVER DIMATIKAN ───────────────────────────────────
+    // Akun hasil pendaftaran = akun AFILIASI. Bila didaftarkan lewat jalur ini,
+    // permintaan sign_up dikirim dari server sehingga IP VPS tercatat sebagai
+    // IP pendaftaran akun trader — banyak akun rujukan berbagi satu IP, persis
+    // pola yang dicurigai aturan Affiliate TOP (pendaftaran mandiri / beberapa
+    // akun). Aplikasi sudah mendaftar LANGSUNG dari perangkat pengguna
+    // (registerToStockity), jadi pendaftaran diarahkan ke sana.
+    throw new UnauthorizedException(
+      'Pendaftaran akun hanya dapat dilakukan melalui aplikasi. Silakan unduh dan buka aplikasi untuk mendaftar.',
+    );
+
     // Reuse cooldown anti-spam yang sama dengan login (per email/IP throttle di controller).
     this.checkLoginRateLimit(emailLc);
 
