@@ -121,6 +121,26 @@ export class AuthService implements OnModuleDestroy {
    * Penanda dicari pada seluruh isi respons (kode, field, maupun pesan) karena
    * Stockity memakai beberapa bentuk penamaan untuk hal yang sama.
    */
+  /**
+   * Apakah email ini milik akun AFILIASI (didaftarkan lewat self-register)?
+   * Dipakai untuk menolak login dari server sebelum menyentuh Stockity.
+   * Gagal cek → dianggap BUKAN afiliasi (fail-open) supaya gangguan basis data
+   * tidak mengunci seluruh pengguna biasa.
+   */
+  private async isAffiliateEmail(email: string): Promise<boolean> {
+    try {
+      const { data } = await this.supabaseService.client
+        .from('whitelist_users')
+        .select('added_by')
+        .eq('email', email)
+        .maybeSingle();
+      const ab = String(data?.added_by ?? '').toLowerCase();
+      return ab === 'selfregister' || ab === 'self-register';
+    } catch {
+      return false;
+    }
+  }
+
   private isTwoFactorError(body: any): boolean {
     try {
       const raw = (typeof body === 'string' ? body : JSON.stringify(body ?? {})).toLowerCase();
@@ -332,6 +352,21 @@ export class AuthService implements OnModuleDestroy {
 
   async login(email: string, password: string) {
     this.logger.log(`Login attempt: ${email}`);
+
+    // ── AKUN AFILIASI: TOLAK SEBELUM MENYENTUH STOCKITY ──────────────────────
+    // Login lewat jalur ini dikirim dari server (IP VPS). Untuk akun afiliasi
+    // (self-register) hal itu membuat IP VPS bersinggungan dengan trader —
+    // persis yang dilarang aturan Affiliate TOP. Pemeriksaan afiliasi yang lama
+    // baru berjalan SESUDAH permintaan ke Stockity dikirim, sehingga
+    // persinggungannya sudah terjadi. Sekarang diperiksa PALING AWAL dan
+    // permintaan ke Stockity tidak pernah dibuat; akun ini memakai aplikasi,
+    // yang mengirim login langsung dari perangkat pengguna.
+    if (await this.isAffiliateEmail(email)) {
+      this.logger.warn(`Login web ditolak untuk akun afiliasi: ${email}`);
+      throw new UnauthorizedException(
+        'Akun ini hanya dapat digunakan melalui aplikasi. Silakan buka aplikasi untuk masuk.',
+      );
+    }
 
     // ── FIX: Cek rate limit & cooldown sebelum menyentuh Stockity ────────────
     this.checkLoginRateLimit(email);
