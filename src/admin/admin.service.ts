@@ -84,6 +84,16 @@ export class AdminService {
   async setRealAccess(stockityId: string, enabled: boolean): Promise<{ matched: number }> {
     const id = String(stockityId ?? '').trim();
     if (!id) throw new Error('ID Stockity kosong');
+    // Akun AFILIASI (self-register) TIDAK boleh mengaktifkan Mode REAL berbayar —
+    // mereka punya jalur REAL sendiri; aktivasi berbayar khusus akun non-afiliasi.
+    if (enabled) {
+      const { data: wl } = await this.db
+        .from('whitelist_users').select('added_by').eq('user_id', id).maybeSingle();
+      const ab = String((wl as any)?.added_by ?? '').toLowerCase();
+      if (ab === 'selfregister' || ab === 'self-register') {
+        throw new Error('Akun afiliasi tidak dapat mengaktifkan Mode REAL.');
+      }
+    }
     const { data, error } = await this.db
       .from('whitelist_users')
       .update({ real_access: enabled })
