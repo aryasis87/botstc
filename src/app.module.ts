@@ -15,6 +15,7 @@ import { MomentumModule } from './momentum/momentum.module';
 import { AISignalModule } from './aisignal/aisignal.module';
 import { TodayProfitModule } from './today-profit/today-profit.module';
 import { AdminModule } from './admin/admin.module';
+import { ActivationModule } from './activation/activation.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { AdminModule } from './admin/admin.module';
     AISignalModule,
     TodayProfitModule,
     AdminModule,
+    ActivationModule,
   ],
   providers: [
     // Guard throttle global — per-user (token) / per-IP (anonim).

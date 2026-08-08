@@ -80,6 +80,19 @@ export class AdminService {
     }
   }
 
+  /** Aktifkan/nonaktifkan akses Mode REAL untuk sebuah akun (by user_id Stockity). */
+  async setRealAccess(stockityId: string, enabled: boolean): Promise<{ matched: number }> {
+    const id = String(stockityId ?? '').trim();
+    if (!id) throw new Error('ID Stockity kosong');
+    const { data, error } = await this.db
+      .from('whitelist_users')
+      .update({ real_access: enabled })
+      .eq('user_id', id)
+      .select('user_id');
+    if (error) throw new Error(error.message);
+    return { matched: (data ?? []).length };
+  }
+
   async updateWhitelist(oldEmail: string, updates: {
     email?: string; name?: string; userId?: string; deviceId?: string;
     isActive?: boolean; lastLogin?: number | null;

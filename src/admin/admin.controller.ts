@@ -32,6 +32,14 @@ export class AdminController {
     return this.svc.listWhitelist(req.user.email, isSuperAdmin);
   }
 
+  /** Aktivasi Mode REAL per akun (super admin) — dipakai panel aktivasi. */
+  @UseGuards(SuperAdminGuard)
+  @Post('real-access')
+  @HttpCode(200)
+  async setRealAccess(@Body() body: { stockityId?: string; enabled?: boolean }) {
+    return this.svc.setRealAccess(String(body?.stockityId ?? ''), body?.enabled !== false);
+  }
+
   @UseGuards(AdminGuard)
   @Get('stats')
   async stats(@Request() req) {

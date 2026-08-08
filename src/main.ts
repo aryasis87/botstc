@@ -45,7 +45,13 @@ async function bootstrap() {
     logger.warn(`⚠️ Supabase config missing. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env`);
   }
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Body parser dengan limit lebih besar — endpoint aktivasi REAL menerima
+  // bukti pembayaran (gambar base64, s.d. ~7MB). Default Nest 100kb menolaknya.
+  const { json, urlencoded } = await import('express');
+  app.use(json({ limit: '8mb' }));
+  app.use(urlencoded({ extended: true, limit: '8mb' }));
 
   // ── Security headers (H1) ─────────────────────────────────────────────────
   // API JSON murni → matikan CSP/CORP yang tidak relevan & bisa mengganggu.
