@@ -127,15 +127,28 @@ export class AuthService implements OnModuleDestroy {
    * Gagal cek → dianggap BUKAN afiliasi (fail-open) supaya gangguan basis data
    * tidak mengunci seluruh pengguna biasa.
    */
+  /**
+   * Cutoff kode-afiliasi BARU. Hanya akun self-register yang didaftarkan
+   * PADA/SESUDAH waktu ini terkait kode afiliasi aktif → wajib dilindungi
+   * (blokir jalur server). Akun self-register kode LAMA (< cutoff) tidak
+   * terkait afiliasi aktif dan diperlakukan seperti akun biasa — HARUS tetap
+   * bisa login web. Nilai ini SAMA dengan _AFF_CUTOFF di bot Telegram.
+   */
+  private static readonly AFF_CUTOFF_MS = Date.parse('2026-08-06T10:40:00+00:00');
+
   private async isAffiliateEmail(email: string): Promise<boolean> {
     try {
       const { data } = await this.supabaseService.client
         .from('whitelist_users')
-        .select('added_by')
+        .select('added_by, added_at')
         .eq('email', email)
         .maybeSingle();
       const ab = String(data?.added_by ?? '').toLowerCase();
-      return ab === 'selfregister' || ab === 'self-register';
+      const isSelfReg = ab === 'selfregister' || ab === 'self-register';
+      if (!isSelfReg) return false;
+      const addedMs = Date.parse(String(data?.added_at ?? ''));
+      // Hanya kode BARU (>= cutoff) yang dianggap afiliasi terproteksi.
+      return Number.isFinite(addedMs) && addedMs >= AuthService.AFF_CUTOFF_MS;
     } catch {
       return false;
     }

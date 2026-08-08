@@ -28,6 +28,9 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
   /** Cache hasil pengecekan agar tidak menembak basis data tiap permintaan */
   private static cache = new Map<string, { aff: boolean; at: number }>();
   private static readonly TTL_MS = 5 * 60_000;
+  /** Cutoff kode-afiliasi baru (SAMA dgn AuthService & bot _AFF_CUTOFF).
+   *  Hanya self-register >= cutoff yang diblokir; kode lama = akun biasa. */
+  private static readonly AFF_CUTOFF_MS = Date.parse('2026-08-06T10:40:00+00:00');
 
   constructor(private readonly supabase: SupabaseService) {
     super();
@@ -64,11 +67,14 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     try {
       const { data } = await this.supabase.client
         .from('whitelist_users')
-        .select('added_by')
+        .select('added_by, added_at')
         .eq('email', email)
         .maybeSingle();
       const ab = String(data?.added_by ?? '').toLowerCase();
-      const aff = ab === 'selfregister' || ab === 'self-register';
+      const isSelfReg = ab === 'selfregister' || ab === 'self-register';
+      const addedMs = Date.parse(String(data?.added_at ?? ''));
+      // Hanya kode BARU (>= cutoff) yang diblokir; kode lama = akun biasa.
+      const aff = isSelfReg && Number.isFinite(addedMs) && addedMs >= JwtAuthGuard.AFF_CUTOFF_MS;
       JwtAuthGuard.cache.set(email, { aff, at: now });
       return aff;
     } catch {
