@@ -8,9 +8,10 @@ export class ActivationController {
 
   @Post('request')
   @HttpCode(200)
-  async request(@Body() body: { app?: string; name?: string; stockityId?: string; proof?: string }) {
+  async request(@Body() body: { app?: string; name?: string; stockityId?: string; proof?: string; feature?: string }) {
     return this.svc.request(
       body?.app === 'koala' ? 'koala' : 'stc',
+      body?.feature === 'aisignal' ? 'aisignal' : 'real',
       String(body?.name ?? '').trim(),
       String(body?.stockityId ?? '').trim(),
       String(body?.proof ?? ''),

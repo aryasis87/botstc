@@ -17,7 +17,7 @@ export class ActivationService {
 
   constructor(private readonly supabase: SupabaseService) {}
 
-  async request(app: string, name: string, stockityId: string, proofDataUrl: string) {
+  async request(app: string, feature: string, name: string, stockityId: string, proofDataUrl: string) {
     if (name.length < 2 || stockityId.length < 3) throw new BadRequestException('Nama / ID Stockity tidak valid');
     const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(proofDataUrl || '');
     if (!m) throw new BadRequestException('Bukti pembayaran tidak valid');
@@ -25,20 +25,26 @@ export class ActivationService {
     if (buf.length > 8 * 1024 * 1024) throw new BadRequestException('Bukti terlalu besar');
 
     const brand = app === 'koala' ? 'Koala S Pro' : 'STC AutoTrade';
+    const isAi = feature === 'aisignal';
 
     // Simpan jejak pengajuan (best-effort; tak menggagalkan kalau tabel belum ada).
     try {
       await this.supabase.client.from('real_activation_requests').insert({
-        app, name, stockity_id: stockityId, status: 'pending', created_at: new Date().toISOString(),
+        app, feature: isAi ? 'aisignal' : 'real', name, stockity_id: stockityId, status: 'pending', created_at: new Date().toISOString(),
       });
     } catch (e) { this.logger.warn(`insert request gagal (abaikan): ${e}`); }
 
-    const caption =
-      `🟢 PENGAJUAN AKTIVASI REAL — ${brand}\n\n` +
-      `👤 Nama: ${name}\n` +
-      `🆔 ID Stockity: ${stockityId}\n` +
-      `💰 Rp 180.000 (QRIS)\n\n` +
-      `➡️ Setujui: aktifkan REAL untuk ID ${stockityId} di panel Super Admin.`;
+    const caption = isAi
+      ? `🔵 PENGAJUAN AKTIVASI AI SIGNAL — ${brand}\n\n` +
+        `👤 Nama: ${name}\n` +
+        `🆔 ID Stockity: ${stockityId}\n` +
+        `💰 Rp 85.000 / bulan (QRIS)\n\n` +
+        `➡️ Setujui: aktifkan AI Signal untuk ID ${stockityId} di panel Super Admin (Aktivasi AI Signal).`
+      : `🟢 PENGAJUAN AKTIVASI REAL — ${brand}\n\n` +
+        `👤 Nama: ${name}\n` +
+        `🆔 ID Stockity: ${stockityId}\n` +
+        `💰 Rp 180.000 (QRIS)\n\n` +
+        `➡️ Setujui: aktifkan REAL untuk ID ${stockityId} di panel Super Admin.`;
 
     if (!this.token || !this.chatIds.length) {
       this.logger.warn('Telegram belum dikonfigurasi (TELEGRAM_BOT_TOKEN / SUPER_ADMIN_CHAT_IDS)');
