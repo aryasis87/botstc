@@ -109,6 +109,17 @@ interface ActiveMode {
   alwaysSignalLossState: IndicatorAlwaysSignalLossState | null;
 }
 
+/**
+ * Menerjemahkan kode galat Stockity yang menandakan amount di luar batas.
+ * Mengembalikan null bila galatnya bukan soal batas amount (mis. gangguan
+ * koneksi), karena hanya keadaan PERMANEN yang layak menghentikan bot.
+ */
+function amountDiLuarBatas(err: string | undefined): string | null {
+  if (err === 'amount_min') return 'di bawah minimum';
+  if (err === 'amount_max') return 'melebihi maksimum';
+  return null;
+}
+
 @Injectable()
 export class IndicatorService implements OnModuleDestroy {
   private readonly logger = new Logger(IndicatorService.name);
@@ -897,6 +908,34 @@ export class IndicatorService implements OnModuleDestroy {
 
     if (!tradeResult?.dealId) {
       this.logger.error(`[${userId}] Trade placement failed: ${tradeResult?.error}`);
+
+      // Amount di luar batas Stockity TIDAK akan pernah diterima, berapa kali
+      // pun dicoba — sinyal berikutnya cuma mengulangi nilai yang sama. Mode
+      // lain sudah berhenti pada keadaan ini; Indicator dulu tidak, sehingga
+      // botnya berputar tanpa akhir sampai pengguna sadar sendiri.
+      const batas0 = amountDiLuarBatas(tradeResult?.error);
+      if (batas0) {
+        this.logger.error(`[${userId}] ❌ Amount ${amount} ${batas0} Stockity — bot dihentikan`);
+        this.writeLog(userId, {
+          id: `${orderId}_s0`,
+          orderId,
+          trend: prediction.recommendedTrend,
+          amount,
+          martingaleStep: 0,
+          executedAt: Date.now(),
+          result: 'FAILED',
+          indicatorType: mode.analysisResult?.indicatorType ?? 'UNKNOWN',
+          cycleNumber: mode.cycleNumber,
+          note: `Amount ${batas0} Stockity — bot dihentikan. Cek konfigurasi amount.`,
+          isDemoAccount: config.isDemoAccount,
+        });
+        mode.isTradeExecuted = false;
+        mode.activeOrderId = null;
+        mode.activeDealId = null;
+        // Ditunda sedikit supaya penghentian tidak berjalan di tengah alur ini.
+        setTimeout(() => { void this.stopIndicatorMode(userId); }, 300);
+        return;
+      }
       // Catat kegagalan agar log tidak kosong untuk trade ini.
       this.writeLog(userId, {
         id: `${orderId}_s0`,
@@ -1160,6 +1199,21 @@ export class IndicatorService implements OnModuleDestroy {
 
     if (!tradeResult?.dealId) {
       this.logger.error(`[${userId}] Martingale trade placement failed: ${tradeResult?.error}`);
+
+      // Lihat catatan di jalur trade pertama: amount di luar batas bersifat
+      // permanen. Pada martingale ini lebih mudah terjadi karena nilainya
+      // berlipat tiap langkah dan cepat menembus maksimum.
+      const batasM = amountDiLuarBatas(tradeResult?.error);
+      if (batasM) {
+        this.logger.error(`[${userId}] ❌ Amount ${martingaleAmount} ${batasM} Stockity (langkah ${step}) — bot dihentikan`);
+        await this.handleCycleCompletion(
+          userId, 'MARTINGALE_FAILED',
+          `Amount ${batasM} Stockity pada langkah ${step}. Kurangi pengali atau amount dasar.`,
+        );
+        setTimeout(() => { void this.stopIndicatorMode(userId); }, 300);
+        return;
+      }
+
       await this.handleCycleCompletion(userId, 'MARTINGALE_FAILED', 'Trade placement error');
       return;
     }
