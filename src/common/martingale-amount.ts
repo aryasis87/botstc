@@ -1,30 +1,35 @@
 /**
- * Pembulatan nilai martingale sebelum dikirim ke Stockity.
+ * Pembulatan nilai order sebelum dikirim ke Stockity.
  *
- * KENAPA BERKAS INI ADA
- * Sebelumnya tujuh tempat menghitung `Math.floor(base * Math.pow(pengali, langkah))`.
- * Pengali seperti 2,3 tidak bisa diwakili persis oleh bilangan pecahan biner:
+ * ATURAN YANG SEBENARNYA BERLAKU
+ * Amount dinyatakan dalam SEN, dan Stockity hanya menerima **satuan mata uang
+ * penuh** — nilainya harus kelipatan 100. Apa pun di luar itu ditolak dengan
+ * `{"field":"amount","validation":"deal_amount_invalid"}`.
  *
- *     1.400.000 x 2,3  =  3.219.999,9999999995
+ * Dibuktikan dari log produksi: dari 17 nilai amount yang PERNAH berhasil,
+ * seluruhnya kelipatan 100, tanpa kecuali. Sementara yang ditolak:
  *
- * `Math.floor` memotongnya menjadi **3.219.999** — kurang satu sen dari satuan
- * mata uang penuh. Stockity menolak nilai seperti itu dengan
- * `{"field":"amount","validation":"deal_amount_invalid"}`, dan penolakan itu
- * sampai ke log hanya sebagai `unknown`, sehingga sebabnya tidak pernah
- * terlihat. Akun 183382931 kehilangan 56 order pada 12 Agustus 2026 karena ini,
- * di mode Indicator maupun CTC — bukan gangguan koneksi, bukan saldo kurang.
+ *   3.219.999  ← 1.400.000 x 2,3, dipotong Math.floor dari 3.219.999,9999999995
+ *         250  ← 100 x 2,5, aritmetika bulat, tanpa galat pecahan sama sekali
  *
- * `Math.round` mengembalikan nilai yang SEBENARNYA dimaksud (3.220.000), bukan
- * nilai yang rusak akibat galat pecahan biner.
+ * Dua sebab yang berbeda, satu aturan yang sama. Karena itu `Math.round` saja
+ * TIDAK cukup: ia membetulkan kasus pertama tetapi meloloskan kasus kedua.
+ * Akun 183892037 tetap gagal berulang setelah perbaikan yang hanya memakai
+ * Math.round — itulah yang membuka aturan sebenarnya.
  *
- * CATATAN yang sengaja TIDAK dilakukan di sini: memaksa hasil ke kelipatan 100
- * (satuan rupiah penuh). Itu benar untuk IDR, tetapi akun mata uang lain
- * memakai satuan berbeda, dan pemaksaan seperti itu akan mengubah nilai order
- * mereka tanpa alasan. Pengali dengan lebih dari dua angka desimal masih bisa
- * menghasilkan pecahan satuan; kalau itu muncul, batasi di sisi masukan
- * pengguna, bukan di sini.
+ * PEMBULATAN KE TERDEKAT, BUKAN KE BAWAH
+ * Ke terdekat memulihkan maksud asli pada kasus galat pecahan
+ * (3.219.999,9999999995 -> 3.220.000, persis angka yang dimaksud). Memotong ke
+ * bawah akan menghasilkan 3.219.900 — sah diterima, tapi meleset satu rupiah
+ * dari yang diminta pengguna tanpa alasan.
+ *
+ * BATAS BAWAH
+ * Hasil tidak boleh 0: nol bukan order yang sah dan hanya akan ditolak dengan
+ * alasan lain. Nilai positif yang lebih kecil dari satu satuan dinaikkan ke
+ * 100, satuan terkecil yang bisa diterima.
  */
 export function bulatkanAmountMartingale(nilai: number): number {
   if (!Number.isFinite(nilai) || nilai <= 0) return 0;
-  return Math.round(nilai);
+  const bulat = Math.round(nilai / 100) * 100;
+  return bulat < 100 ? 100 : bulat;
 }

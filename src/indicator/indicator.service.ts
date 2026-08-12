@@ -117,6 +117,8 @@ interface ActiveMode {
 function amountDiLuarBatas(err: string | undefined): string | null {
   if (err === 'amount_min') return 'di bawah minimum';
   if (err === 'amount_max') return 'melebihi maksimum';
+  // Kelipatan 100 sen = satu satuan mata uang penuh. Ditolak permanen.
+  if (err === 'amount_invalid') return 'bukan satuan mata uang penuh';
   return null;
 }
 
@@ -1229,7 +1231,9 @@ export class IndicatorService implements OnModuleDestroy {
     // settings.amount adalah amount untuk trade normal (step 0),
     // martingale.baseAmount adalah base yang dikonfigurasi user khusus untuk martingale.
     const base = config.martingale.baseAmount;
-    if (step === 0) return base;
+    // Base dari konfigurasi pengguna pun harus satuan penuh — kalau tidak,
+    // trade pertama gagal sebelum martingale sempat berjalan.
+    if (step === 0) return bulatkanAmountMartingale(base);
 
     const multiplier = config.martingale.multiplierType === 'FIXED'
       ? config.martingale.multiplierValue

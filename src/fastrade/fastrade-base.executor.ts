@@ -335,6 +335,19 @@ export abstract class FastradeBaseExecutor {
       return null;
     }
 
+    if (result.error === 'amount_invalid') {
+      this.logger.error(`[${this.userId}] ❌ Amount ${amount} bukan satuan mata uang penuh — bot dihentikan`);
+      this.callbacks.onLog({
+        id: uuidv4(), orderId, trend, amount, martingaleStep,
+        result: 'FAILED', executedAt: now, cycleNumber: cycleNum,
+        note: `Amount ${amount} bukan satuan mata uang penuh. Pakai kelipatan satuan penuh.`,
+        isDemoAccount: this.config.isDemoAccount,
+      });
+      this.callbacks.onStatusChange(`❌ Amount ${amount} bukan satuan mata uang penuh — bot dihentikan.`);
+      setTimeout(() => this.stop(), 300);
+      return null;
+    }
+
     if (result.error === 'duplicate') {
       this.logger.warn(`[${this.userId}] ⚠️ Duplicate deal — menunggu hasil via WS`);
     }
@@ -408,7 +421,7 @@ export abstract class FastradeBaseExecutor {
 
   protected calcAmount(step: number): number {
     const m = this.config.martingale;
-    if (!m.isEnabled || step === 0) return m.baseAmount;
+    if (!m.isEnabled || step === 0) return bulatkanAmountMartingale(m.baseAmount);
     if (m.multiplierType === 'FIXED') {
       return bulatkanAmountMartingale(m.baseAmount * Math.pow(m.multiplierValue, step));
     }
