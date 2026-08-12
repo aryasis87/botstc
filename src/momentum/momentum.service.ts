@@ -4,6 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
+import { bulatkanAmountMartingale } from '../common/martingale-amount';
 import {
   MomentumType,
   MomentumSignal,
@@ -1277,7 +1278,7 @@ export class MomentumService implements OnModuleDestroy {
     const multiplier = config.martingale.multiplierType === 'FIXED'
       ? config.martingale.multiplierValue
       : 1 + config.martingale.multiplierValue / 100;
-    return Math.floor(config.martingale.baseAmount * Math.pow(multiplier, step));
+    return bulatkanAmountMartingale(config.martingale.baseAmount * Math.pow(multiplier, step));
   }
 
   // ─────────────────────────────────────────────────────────────────────────

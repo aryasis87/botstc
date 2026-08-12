@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { StockityWebSocketClient, DealResultPayload } from './websocket-client';
+import { bulatkanAmountMartingale } from '../common/martingale-amount';
 import {
   ScheduledOrder, ScheduleConfig, BotState,
   AlwaysSignalLossState, TradeOrderData,
@@ -1071,9 +1072,9 @@ export class ScheduleExecutor {
   private calcAmount(step: number): number {
     const m = this.config.martingale;
     if (!m.isEnabled || step === 0) return m.baseAmount;
-    if (m.multiplierType === 'FIXED') return Math.floor(m.baseAmount * Math.pow(m.multiplierValue, step));
+    if (m.multiplierType === 'FIXED') return bulatkanAmountMartingale(m.baseAmount * Math.pow(m.multiplierValue, step));
     const mult = 1 + m.multiplierValue / 100;
-    return Math.floor(m.baseAmount * Math.pow(mult, step));
+    return bulatkanAmountMartingale(m.baseAmount * Math.pow(mult, step));
   }
 
   getStatus(): object {

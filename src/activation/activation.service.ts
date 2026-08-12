@@ -38,12 +38,12 @@ export class ActivationService {
       ? `🔵 PENGAJUAN AKTIVASI AI SIGNAL — ${brand}\n\n` +
         `👤 Nama: ${name}\n` +
         `🆔 ID Stockity: ${stockityId}\n` +
-        `💰 Rp 85.000 / bulan (QRIS)\n\n` +
+        `💰 Rp 50.000 / bulan (QRIS)\n\n` +
         `➡️ Setujui: aktifkan AI Signal untuk ID ${stockityId} di panel Super Admin (Aktivasi AI Signal).`
       : `🟢 PENGAJUAN AKTIVASI REAL — ${brand}\n\n` +
         `👤 Nama: ${name}\n` +
         `🆔 ID Stockity: ${stockityId}\n` +
-        `💰 Rp 180.000 (QRIS)\n\n` +
+        `💰 Rp 150.000 (QRIS)\n\n` +
         `➡️ Setujui: aktifkan REAL untuk ID ${stockityId} di panel Super Admin.`;
 
     if (!this.token || !this.chatIds.length) {

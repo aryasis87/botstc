@@ -4,7 +4,10 @@ import { TradeOrderData } from './types';
 
 export interface PlaceTradeResult {
   dealId: string | null;
-  error?: 'amount_min' | 'amount_max' | 'duplicate' | 'unknown';
+  error?: 'amount_min' | 'amount_max' | 'duplicate' | 'unknown'
+        // Kode diagnostik jalur WebSocket — dipakai untuk melacak kegagalan
+        // martingale yang dulu hanya muncul sebagai "unknown".
+        | 'ws_timeout' | 'ws_not_open' | 'ws_destroyed';
 }
 
 export interface DealResultPayload {
@@ -319,7 +322,7 @@ export class StockityWebSocketClient {
       const timer = setTimeout(() => {
         this.pendingTrades.delete(ref);
         this.logger.warn(`[${this.userId}] Trade timeout ref=${ref}`);
-        resolve({ dealId: null, error: 'unknown' });
+        resolve({ dealId: null, error: 'ws_timeout' });
       }, 5000);  // Reduced from 8s for faster timeout response
 
       this.pendingTrades.set(ref, { resolve, timer });
@@ -344,7 +347,7 @@ export class StockityWebSocketClient {
         clearTimeout(timer);
         this.pendingTrades.delete(ref);
         this.logger.error(`[${this.userId}] WS tidak open, tidak bisa place trade`);
-        resolve({ dealId: null, error: 'unknown' });
+        resolve({ dealId: null, error: 'ws_not_open' });
       }
     });
   }
@@ -360,7 +363,10 @@ export class StockityWebSocketClient {
     // result.dealId tanpa null-check. Harus resolve dengan PlaceTradeResult yang valid.
     for (const [, pending] of this.pendingTrades.entries()) {
       clearTimeout(pending.timer);
-      pending.resolve({ dealId: null, error: 'unknown' });
+      // Dulu jalur ini DIAM: order menunggu diselesaikan tanpa jejak, sehingga
+      // log akhirnya hanya berbunyi 'unknown' dan sebabnya tak bisa dilacak.
+      this.logger.warn(`[${this.userId}] Order dibatalkan: koneksi ditutup saat menunggu jawaban`);
+      pending.resolve({ dealId: null, error: 'ws_destroyed' });
     }
     this.pendingTrades.clear();
     this.ws?.close();

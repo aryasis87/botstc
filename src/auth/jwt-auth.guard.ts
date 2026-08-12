@@ -50,11 +50,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     const email = String(req.user?.email ?? '').toLowerCase().trim();
     if (!email) return true;
 
-    if (await this.isAffiliate(email)) {
-      throw new ForbiddenException(
-        'Akun ini hanya dapat digunakan melalui aplikasi. Silakan buka aplikasi.',
-      );
-    }
     return true;
   }
 

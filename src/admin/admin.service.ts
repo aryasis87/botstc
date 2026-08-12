@@ -84,19 +84,18 @@ export class AdminService {
   async setRealAccess(stockityId: string, enabled: boolean): Promise<{ matched: number }> {
     const id = String(stockityId ?? '').trim();
     if (!id) throw new Error('ID Stockity kosong');
-    // Akun AFILIASI (self-register) TIDAK boleh mengaktifkan Mode REAL berbayar —
-    // mereka punya jalur REAL sendiri; aktivasi berbayar khusus akun non-afiliasi.
-    if (enabled) {
-      const { data: wl } = await this.db
-        .from('whitelist_users').select('added_by').eq('user_id', id).maybeSingle();
-      const ab = String((wl as any)?.added_by ?? '').toLowerCase();
-      if (ab === 'selfregister' || ab === 'self-register') {
-        throw new Error('Akun afiliasi tidak dapat mengaktifkan Mode REAL.');
-      }
-    }
+    // Dulu akun self-register (afiliasi) ditolak di sini: mereka punya jalur
+    // REAL sendiri lewat pendaftaran rujukan. Program afiliasi dihentikan
+    // 2026-08-11 dan mode REAL kini produk berbayar biasa, jadi admin harus
+    // bisa membukanya untuk SIAPA PUN yang sudah membayar.
     const { data, error } = await this.db
       .from('whitelist_users')
-      .update({ real_access: enabled })
+      // Stempel waktu aktivasi ikut ditulis supaya dashboard bisa menampilkan
+      // popup "teraktivasi pukul ...". Saat dimatikan, stempelnya dikosongkan
+      // agar aktivasi berikutnya terbaca sebagai kejadian baru.
+      .update(enabled
+        ? { real_access: true,  real_access_at: new Date().toISOString() }
+        : { real_access: false, real_access_at: null })
       .eq('user_id', id)
       .select('user_id');
     if (error) throw new Error(error.message);
@@ -629,4 +628,92 @@ export class AdminService {
   async cronDeactivateExpired() {
     await this.deactivateExpired();
   }
+
+  // ============================================================
+  // STATUS SISTEM (super admin) — pantauan cepat dari halaman profil.
+  //
+  // Yang diperiksa dipilih dari apa yang BENAR-BENAR pernah gagal, bukan
+  // daftar generik: basis data, API Stockity, dan PROXY LOGIN. Yang terakhir
+  // itu penting — 12 Agustus 2026 login web mati total sepanjang hari karena
+  // proxy kosong, dan tak ada yang tahu sampai pengguna mengeluh.
+  //
+  // Semua pemeriksaan dibatasi waktu dan dibungkus try/catch: halaman status
+  // TIDAK BOLEH ikut menggantung hanya karena satu layanan lambat.
+  // ============================================================
+  async systemStatus(): Promise<any> {
+    const mulai = Date.now();
+    const cek = async (nama: string, fn: () => Promise<any>) => {
+      const t0 = Date.now();
+      try {
+        const info = await fn();
+        return { nama, ok: true, ms: Date.now() - t0, info };
+      } catch (e: any) {
+        return { nama, ok: false, ms: Date.now() - t0, info: String(e?.message ?? e).slice(0, 120) };
+      }
+    };
+
+    const [db, stockity, proxy] = await Promise.all([
+      cek('Basis data', async () => {
+        const { error } = await this.db.from('app_config').select('key').limit(1);
+        if (error) throw new Error(error.message);
+        return 'terhubung';
+      }),
+      cek('API Stockity', async () => {
+        // Root Stockity menjawab 404 — itu WAJAR dan justru membuktikan
+        // servernya hidup. Yang benar-benar gawat hanya 5xx (atau tak ada
+        // jawaban sama sekali, yang sudah ditangkap sebagai galat di bawah).
+        const r = await this.ambilSingkat('https://api.stockity1.id/', 8000);
+        if (r >= 500) throw new Error(`server bermasalah (HTTP ${r})`);
+        return 'menjawab';
+      }),
+      cek('Proxy login', async () => {
+        const px = (process.env.LOGIN_PROXY ?? '').trim();
+        if (!px) throw new Error('LOGIN_PROXY kosong — login web akan ditolak Stockity');
+        const ip = await this.ipLewatProxy(px, 12000);
+        return ip ? `aktif · IP ${ip}` : 'tidak merespons';
+      }),
+    ]);
+
+    return {
+      waktu: new Date().toISOString(),
+      backend: {
+        nama: 'Backend',
+        ok: true,
+        ms: Date.now() - mulai,
+        info: `aktif ${Math.floor(process.uptime() / 3600)}j ${Math.floor((process.uptime() % 3600) / 60)}m`,
+      },
+      layanan: [db, stockity, proxy],
+    };
+  }
+
+  /** GET singkat hanya untuk tahu layanan menjawab; hasilnya kode HTTP. */
+  private ambilSingkat(url: string, timeoutMs: number): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const { execFile } = require('child_process');
+      execFile('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}',
+        '--max-time', String(Math.ceil(timeoutMs / 1000)), url],
+        (err: any, out: string) => {
+          if (err) return reject(new Error('tidak dapat dihubungi'));
+          const kode = parseInt((out || '').trim(), 10);
+          if (!Number.isFinite(kode) || kode === 0) return reject(new Error('tidak menjawab'));
+          resolve(kode);
+        });
+    });
+  }
+
+  /** IP keluar lewat proxy login — membuktikan proxy benar-benar melayani. */
+  private ipLewatProxy(proxy: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const { execFile } = require('child_process');
+      execFile('curl', ['-s', '--proxy', proxy,
+        '--max-time', String(Math.ceil(timeoutMs / 1000)), 'https://api.ipify.org'],
+        (err: any, out: string) => {
+          if (err) return reject(new Error('proxy tidak merespons'));
+          const ip = (out || '').trim();
+          if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return reject(new Error('proxy tidak merespons'));
+          resolve(ip);
+        });
+    });
+  }
+
 }

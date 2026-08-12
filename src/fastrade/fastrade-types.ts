@@ -27,6 +27,7 @@ export interface FastradeConfig {
   currencyIso: string;
   stopLoss?: number;
   stopProfit?: number;
+  reversalSteps?: number[];
 }
 
 export interface FastradeOrder {

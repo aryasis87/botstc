@@ -5,6 +5,20 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard, SuperAdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
 
+// ─────────────────────────────────────────────────────────────────────
+// PEMBAGIAN ROLE (ditetapkan pemilik 2026-08-12)
+//   super admin : akses penuh
+//   admin biasa : SEMUA fitur, KECUALI panel whitelist
+//
+// Karena itu penjaganya DIBALIK dari sebelumnya: whitelist naik ke
+// SuperAdminGuard, sedangkan config/real-access turun ke AdminGuard.
+//
+// SATU PENGECUALIAN YANG DISENGAJA: pengelolaan admin & super-admin
+// (admins*, super-admins*) TETAP super admin. Itu bukan "fitur" melainkan
+// mekanisme yang menentukan role itu sendiri — bila admin biasa boleh
+// mengaksesnya, ia bisa mengangkat dirinya menjadi super admin dan
+// pembedaan kedua role jadi tak berarti.
+// ─────────────────────────────────────────────────────────────────────
 @UseGuards(JwtAuthGuard)
 @Controller('admin')
 export class AdminController {
@@ -25,7 +39,7 @@ export class AdminController {
   }
 
   // ── Whitelist (admin) ──────────────────────────────────────────────────────
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Get('whitelist')
   async listWhitelist(@Request() req) {
     const { isSuperAdmin } = await this.svc.getMe(req.user.email);
@@ -33,28 +47,28 @@ export class AdminController {
   }
 
   /** Aktivasi Mode REAL per akun (super admin) — dipakai panel aktivasi. */
-  @UseGuards(SuperAdminGuard)
+  @UseGuards(AdminGuard)
   @Post('real-access')
   @HttpCode(200)
   async setRealAccess(@Body() body: { stockityId?: string; enabled?: boolean }) {
     return this.svc.setRealAccess(String(body?.stockityId ?? ''), body?.enabled !== false);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Get('stats')
   async stats(@Request() req) {
     const { isSuperAdmin } = await this.svc.getMe(req.user.email);
     return this.svc.stats(req.user.email, isSuperAdmin);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Post('whitelist')
   @HttpCode(200)
   addWhitelist(@Request() req, @Body() body: { email: string; name?: string; userId?: string; deviceId?: string; isPrimary?: boolean; addedBy?: string }) {
     return this.svc.addWhitelist(body, body.addedBy ?? req.user.email);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Patch('whitelist')
   @HttpCode(200)
   async updateWhitelist(@Request() req, @Body() body: { oldEmail: string; email?: string; name?: string; userId?: string; deviceId?: string; isActive?: boolean; lastLogin?: number | null }) {
@@ -68,7 +82,7 @@ export class AdminController {
   // tersimpan permanen. Endpoint whitelist/toggle & DELETE whitelist ditiadakan,
   // dan updateWhitelist mengabaikan field isActive (lihat admin.service.ts).
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Post('whitelist/import')
   @HttpCode(200)
   importWhitelist(@Request() req, @Body() body: { rows: any[]; addedBy?: string }) {
@@ -125,7 +139,7 @@ export class AdminController {
   }
 
   // ── Config (super admin only) ──────────────────────────────────────────────
-  @UseGuards(SuperAdminGuard)
+  @UseGuards(AdminGuard)
   @Put('config')
   @HttpCode(200)
   upsertConfig(@Body() body: { key: string; value: unknown }) {
@@ -142,7 +156,7 @@ export class AdminController {
 
   // ── Chat DM antar admin/super-admin ────────────────────────────────────────
   /** Daftar kontak: super→semua admin, admin→super-admin saja. */
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Get('chat/contacts')
   async chatContacts(@Request() req) {
     const { isSuperAdmin } = await this.svc.getMe(req.user.email);
@@ -150,13 +164,13 @@ export class AdminController {
   }
 
   /** Pesan dalam percakapan dengan ?with=<email> (&after=<id> untuk polling). */
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Get('chat')
   chatConversation(@Request() req, @Query('with') withEmail: string, @Query('after') after?: string) {
     return this.svc.getConversation(req.user.email, withEmail ?? '', after ? parseInt(after, 10) || 0 : 0);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Post('chat')
   @HttpCode(200)
   async sendChat(@Request() req, @Body() body: { to: string; content: string }) {
@@ -164,7 +178,7 @@ export class AdminController {
     return this.svc.sendDm({ email: req.user.email, isSuper: isSuperAdmin }, body.to, body.content);
   }
 
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Delete('chat/:id')
   @HttpCode(200)
   async deleteChat(@Request() req, @Param('id') id: string) {
@@ -180,16 +194,29 @@ export class AdminController {
     return this.svc.setUserPeriod(body.email, Number(body.days) || 0);
   }
 
+  // ── Status sistem ──────────────────────────────────────────────────────────
+  /**
+   * Ringkasan hidup/mati layanan penopang, untuk kartu pantauan di halaman
+   * profil. SuperAdminGuard bukan sekadar formalitas: jawabannya memuat IP
+   * keluar proxy dan pesan galat mentah — bahan yang tak perlu dilihat admin
+   * biasa, apalagi pengguna.
+   */
+  @UseGuards(SuperAdminGuard)
+  @Get('system-status')
+  systemStatus() {
+    return this.svc.systemStatus();
+  }
+
   // ── Standing & reaktivasi ──────────────────────────────────────────────────
   /** Standing admin saat ini (masa aktif, jumlah user, biaya, request pending). */
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Get('standing')
   standing(@Request() req) {
     return this.svc.getMyStanding(req.user.email);
   }
 
   /** Admin biasa mengajukan reaktivasi (paket 7/14/30 hari). */
-  @UseGuards(AdminGuard)
+  @UseGuards(SuperAdminGuard)
   @Post('reactivation/request')
   @HttpCode(200)
   requestReactivation(@Request() req, @Body() body: { days: number }) {

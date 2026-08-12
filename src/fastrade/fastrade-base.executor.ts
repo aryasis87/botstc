@@ -2,6 +2,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
+import { bulatkanAmountMartingale } from '../common/martingale-amount';
 import {
   FastradeConfig, FastradeLog, FastradeOrder, TrendType, FastradeTradeOrder,
   FastradeAlwaysSignalLossState,
@@ -158,6 +159,9 @@ export abstract class FastradeBaseExecutor {
     }
 
     const amount = this.calcAmount(effectiveStep);
+    // FAST REVERSAL: balik arah HANYA pada step reversal terpilih (order ini saja);
+    // trend dasar (currentTrend) tetap, sehingga martingale berikutnya dihitung dari arah semula.
+    const execTrend: TrendType = this.config.reversalSteps?.includes(effectiveStep) ? this.reverseTrend(trend) : trend;
     this.setExecutingPhase();
 
     this.logger.log(
@@ -166,7 +170,7 @@ export abstract class FastradeBaseExecutor {
       (retryCount > 0 ? ` (retry ${retryCount}/${this.MAX_RETRIES})` : ''),
     );
 
-    const order = await this.executeTrade(trend, amount, effectiveStep, this.cycleNumber);
+    const order = await this.executeTrade(execTrend, amount, effectiveStep, this.cycleNumber);
 
     if (!order) {
       if (!this.isRunning) return;
@@ -179,7 +183,7 @@ export abstract class FastradeBaseExecutor {
     }
 
     this.activeOrder = order;
-    this.setWaitingResultPhase(trend, step);
+    this.setWaitingResultPhase(execTrend, step);
     this.startResultTimeout(order.id);
   }
 
@@ -406,10 +410,10 @@ export abstract class FastradeBaseExecutor {
     const m = this.config.martingale;
     if (!m.isEnabled || step === 0) return m.baseAmount;
     if (m.multiplierType === 'FIXED') {
-      return Math.floor(m.baseAmount * Math.pow(m.multiplierValue, step));
+      return bulatkanAmountMartingale(m.baseAmount * Math.pow(m.multiplierValue, step));
     }
     const mult = 1 + m.multiplierValue / 100;
-    return Math.floor(m.baseAmount * Math.pow(mult, step));
+    return bulatkanAmountMartingale(m.baseAmount * Math.pow(mult, step));
   }
 
   protected resetMartingale() {
@@ -624,6 +628,10 @@ export abstract class FastradeBaseExecutor {
       wsConnected: this.wsClient.isConnected(),
       alwaysSignalActive: this.alwaysSignalLossState?.hasOutstandingLoss ?? false,
       alwaysSignalStep: this.alwaysSignalLossState?.currentMartingaleStep ?? 0,
+      // Fast Reversal berjalan sebagai FTT + reversalSteps, jadi `mode` saja
+      // tidak cukup untuk membedakannya. Klien memakai medan ini saat memulihkan
+      // keadaan; tanpanya sesi Fast Reversal tampil & diperlakukan sebagai FTT.
+      reversalSteps: this.config.reversalSteps ?? [],
       stopGeneration: this.stopGeneration,
     };
   }

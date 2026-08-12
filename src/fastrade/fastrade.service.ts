@@ -70,6 +70,7 @@ export class FastradeService implements OnModuleDestroy {
       currencyIso: dto.currencyIso,
       stopLoss: dto.stopLoss ?? 0,
       stopProfit: dto.stopProfit ?? 0,
+      reversalSteps: dto.reversalSteps,
     };
 
     // Create fresh WS connection

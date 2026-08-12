@@ -24,6 +24,16 @@ export class FttExecutor extends FastradeBaseExecutor {
 
   protected get modeName(): string { return 'FTT'; }
 
+  /**
+   * Fast Reversal = FTT dengan daftar langkah K yang arahnya dibalik.
+   * Sebelum ini backend hanya memakai reversalSteps saat menyusun order
+   * (membalik arah), tapi alur menang/kalahnya tetap alur FTT biasa —
+   * sehingga sesi Fast Reversal di WEB berperilaku beda dari APK.
+   */
+  private get isFastReversal(): boolean {
+    return !!this.config.reversalSteps?.length;
+  }
+
   constructor(
     userId: string,
     wsClient: StockityWebSocketClient,
@@ -159,6 +169,20 @@ export class FttExecutor extends FastradeBaseExecutor {
 
   protected onWin(order: FastradeOrder): void {
     const trend = this.currentTrend ?? order.trend;
+
+    // FAST REVERSAL: menang = siklus kompensasi DITUTUP. Arah siklus berikutnya
+    // dibaca ULANG dari candle, bukan meneruskan arah siklus lama yang sudah
+    // usang — kalau diteruskan, order pertama sesudah profit terlihat masih
+    // melawan candle terbaru.
+    if (this.isFastReversal) {
+      this.resetMartingale();
+      this.currentTrend = undefined;
+      this.logger.log(`[${this.userId}] Fast Reversal WIN ✅ — siklus selesai, baca candle lagi`);
+      this.callbacks.onStatusChange('Fast Reversal WIN ✅ — siklus selesai, baca candle lagi');
+      this.scheduleNewCycle(200);
+      return;
+    }
+
     this.logger.log(`[${this.userId}] FTT WIN ✅ — same trend: ${trend.toUpperCase()}`);
     this.callbacks.onStatusChange(`FTT WIN ✅ — Lanjut ${trend.toUpperCase()} segera`);
     this.resetMartingale();
@@ -171,6 +195,21 @@ export class FttExecutor extends FastradeBaseExecutor {
   protected onLose(order: FastradeOrder): void {
     const m = this.config.martingale;
     const trend = this.currentTrend ?? order.trend;
+
+    // FAST REVERSAL: kalah SELALU dilanjutkan kompensasi di candle berikutnya —
+    // tanpa batas MAX STEP dan tanpa membaca ulang dua candle. Dulu kasus ini
+    // jatuh ke cabang FTT biasa, yang menunggu siklus baru (jeda 2 candle) atau
+    // berhenti di maxSteps lalu membalik arah.
+    if (this.isFastReversal) {
+      const nextStep = this.martingaleStep + 1;
+      this.martingaleStep = nextStep;
+      this.martingaleActive = true;
+      this.martingaleTotalLoss += order.amount;
+      this.logger.log(`[${this.userId}] Fast Reversal LOSE — kompensasi step ${nextStep}`);
+      this.callbacks.onStatusChange(`Fast Reversal LOSE — kompensasi step ${nextStep}`);
+      this.afterDelay(200, () => this.executeWithTrend(trend, nextStep));
+      return;
+    }
 
     // ── Always Signal ──────────────────────────────────────────────────────
     if (m.isEnabled && m.isAlwaysSignal) {

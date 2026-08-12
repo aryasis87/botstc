@@ -1,6 +1,6 @@
 import {
   IsBoolean, IsNumber, IsObject, IsOptional,
-  IsString, Min, Max, IsIn,
+  IsString, Min, Max, IsIn, IsArray,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -36,4 +36,5 @@ export class StartFastradeDto {
 
   @IsOptional() @IsNumber() @Min(0) stopLoss?: number;
   @IsOptional() @IsNumber() @Min(0) stopProfit?: number;
+  @IsOptional() @IsArray() @IsNumber({}, { each: true }) reversalSteps?: number[];
 }

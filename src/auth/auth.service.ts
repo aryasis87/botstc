@@ -116,55 +116,34 @@ export class AuthService implements OnModuleDestroy {
    * Redaksi data sensitif sebelum masuk log (M6): token, UUID, email, password.
    * Mencegah PII/kredensial bocor ke logs/out.log.
    */
-  /**
-   * Apakah respons galat Stockity menandakan akun memakai autentikasi 2FA?
-   * Penanda dicari pada seluruh isi respons (kode, field, maupun pesan) karena
-   * Stockity memakai beberapa bentuk penamaan untuk hal yang sama.
-   */
-  /**
-   * Apakah email ini milik akun AFILIASI (didaftarkan lewat self-register)?
-   * Dipakai untuk menolak login dari server sebelum menyentuh Stockity.
-   * Gagal cek → dianggap BUKAN afiliasi (fail-open) supaya gangguan basis data
-   * tidak mengunci seluruh pengguna biasa.
-   */
-  /**
-   * Cutoff kode-afiliasi BARU. Hanya akun self-register yang didaftarkan
-   * PADA/SESUDAH waktu ini terkait kode afiliasi aktif → wajib dilindungi
-   * (blokir jalur server). Akun self-register kode LAMA (< cutoff) tidak
-   * terkait afiliasi aktif dan diperlakukan seperti akun biasa — HARUS tetap
-   * bisa login web. Nilai ini SAMA dengan _AFF_CUTOFF di bot Telegram.
-   */
-  private static readonly AFF_CUTOFF_MS = Date.parse('2026-08-06T10:40:00+00:00');
+  private isTwoFactorError(body: any): boolean {
+    try {
+      const raw = (typeof body === "string" ? body : JSON.stringify(body ?? {})).toLowerCase();
+      if (!raw) return false;
+      return (
+        raw.includes("two_factor") || raw.includes("two-factor") || raw.includes("twofactor") ||
+        raw.includes("2fa") || raw.includes("otp") ||
+        raw.includes("authenticator") || raw.includes("totp") ||
+        raw.includes("verification code") || raw.includes("kode verifikasi")
+      );
+    } catch { return false; }
+  }
 
   private async isAffiliateEmail(email: string): Promise<boolean> {
     try {
       const { data } = await this.supabaseService.client
-        .from('whitelist_users')
-        .select('added_by, added_at')
-        .eq('email', email)
+        .from("whitelist_users")
+        .select("added_by, added_at")
+        .eq("email", email)
         .maybeSingle();
-      const ab = String(data?.added_by ?? '').toLowerCase();
-      const isSelfReg = ab === 'selfregister' || ab === 'self-register';
+      const ab = String(data?.added_by ?? "").toLowerCase();
+      const isSelfReg = ab === "selfregister" || ab === "self-register";
       if (!isSelfReg) return false;
-      const addedMs = Date.parse(String(data?.added_at ?? ''));
-      // Hanya kode BARU (>= cutoff) yang dianggap afiliasi terproteksi.
-      return Number.isFinite(addedMs) && addedMs >= AuthService.AFF_CUTOFF_MS;
+      const addedMs = Date.parse(String(data?.added_at ?? ""));
+      return Number.isFinite(addedMs) && addedMs >= Date.parse("2026-08-06T10:40:00+00:00");
     } catch {
       return false;
     }
-  }
-
-  private isTwoFactorError(body: any): boolean {
-    try {
-      const raw = (typeof body === 'string' ? body : JSON.stringify(body ?? {})).toLowerCase();
-      if (!raw) return false;
-      return (
-        raw.includes('two_factor') || raw.includes('two-factor') || raw.includes('twofactor') ||
-        raw.includes('2fa') || raw.includes('otp') ||
-        raw.includes('authenticator') || raw.includes('totp') ||
-        raw.includes('verification code') || raw.includes('kode verifikasi')
-      );
-    } catch { return false; }
   }
 
   private redact(s: string): string {
@@ -281,17 +260,28 @@ export class AuthService implements OnModuleDestroy {
     const base = (process.env.LOGIN_PROXY ?? '').trim();
     if (!base) return undefined;
 
-    const range = (process.env.LOGIN_PROXY_STICKY_RANGE ?? '').trim();
-    const m = range.match(/^(\d+)\s*-\s*(\d+)$/);
+    // ── Sticky per-user ────────────────────────────────────────────────
+    // Penyedia menandai sesi lewat SUFIKS USERNAME, bukan nomor port —
+    // mis. Webshare: `user-id-<sessionId>`. Versi lama menukar port
+    // (LOGIN_PROXY_STICKY_RANGE) dan TIDAK bekerja di penyedia ini: portnya
+    // tetap 80, sehingga semua pengguna berbagi satu sesi acak.
+    //
+    // Diuji 2026-08-12: sesi yang sama mengembalikan IP yang sama berulang
+    // kali, sesi berbeda memberi IP berbeda. Tanpa ini setiap permintaan
+    // keluar dari IP berlainan — satu orang seolah berpindah jaringan tiap
+    // detik, pola yang justru memancing pemeriksaan Stockity.
+    const tmpl = (process.env.LOGIN_PROXY_SESSION_TEMPLATE ?? '').trim();
+    if (!tmpl) return base;
+
+    // sessionId dari hash email → satu pengguna selalu memakai IP yang sama.
+    const sid = this.stickyHash(email.toLowerCase().trim()) % 100000;
+    const sesi = tmpl.replace('{id}', String(sid));
+
+    // Sisipkan sufiks ke bagian USERNAME dari scheme://user:pass@host:port
+    const m = base.match(/^([a-z0-9+.-]+:\/\/)([^:@/]+)(:[^@]*)?@(.+)$/i);
     if (!m) return base;
-
-    const start = parseInt(m[1], 10);
-    const end = parseInt(m[2], 10);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return base;
-
-    const port = start + (this.stickyHash(email.toLowerCase().trim()) % (end - start + 1));
-    // Ganti port di akhir URL (scheme://[user:pass@]host:PORT) → port sticky per-user.
-    return /:\d+$/.test(base) ? base.replace(/:\d+$/, `:${port}`) : `${base}:${port}`;
+    const [, scheme, user, sandi, sisa] = m;
+    return `${scheme}${user}${sesi}${sandi ?? ''}@${sisa}`;
   }
 
   // ── curlPost ──────────────────────────────────────────────────────────────
@@ -366,21 +356,6 @@ export class AuthService implements OnModuleDestroy {
   async login(email: string, password: string) {
     this.logger.log(`Login attempt: ${email}`);
 
-    // ── AKUN AFILIASI: TOLAK SEBELUM MENYENTUH STOCKITY ──────────────────────
-    // Login lewat jalur ini dikirim dari server (IP VPS). Untuk akun afiliasi
-    // (self-register) hal itu membuat IP VPS bersinggungan dengan trader —
-    // persis yang dilarang aturan Affiliate TOP. Pemeriksaan afiliasi yang lama
-    // baru berjalan SESUDAH permintaan ke Stockity dikirim, sehingga
-    // persinggungannya sudah terjadi. Sekarang diperiksa PALING AWAL dan
-    // permintaan ke Stockity tidak pernah dibuat; akun ini memakai aplikasi,
-    // yang mengirim login langsung dari perangkat pengguna.
-    if (await this.isAffiliateEmail(email)) {
-      this.logger.warn(`Login web ditolak untuk akun afiliasi: ${email}`);
-      throw new UnauthorizedException(
-        'Akun ini hanya dapat digunakan melalui aplikasi. Silakan buka aplikasi untuk masuk.',
-      );
-    }
-
     // ── FIX: Cek rate limit & cooldown sebelum menyentuh Stockity ────────────
     this.checkLoginRateLimit(email);
 
@@ -435,23 +410,17 @@ export class AuthService implements OnModuleDestroy {
         // ── FIX: Handle 429 secara khusus — aktifkan blokir panjang ─────────
         if (result.status === 429) {
           this.applyRateLimitBlock(email);
-          const errMsg: string =
+          if (this.isTwoFactorError(body)) {
+          throw new UnauthorizedException(
+            "Akun anda mengaktifkan autentikasi 2FA, mohon dinonaktifkan.",
+          );
+        }
+
+        const errMsg: string =
             body?.errors?.[0]?.context?.message ||
             body?.errors?.[0]?.message          ||
             'Terlalu banyak percobaan login dari server. Coba lagi dalam beberapa menit.';
           throw new HttpException(errMsg, HttpStatus.TOO_MANY_REQUESTS);
-        }
-
-        // ── 2FA ─────────────────────────────────────────────────────────────
-        // Galat 2FA datang pada status yang sama dengan kata sandi salah,
-        // sehingga sebelumnya SELALU terbaca "Email atau password salah" dan
-        // pengguna tidak tahu harus menonaktifkan 2FA lebih dulu. Diperiksa
-        // sebelum pesan umum. (Penanda dicari luas: Stockity memakai beberapa
-        // bentuk — otp / token / two_factor / authenticator.)
-        if (this.isTwoFactorError(body)) {
-          throw new UnauthorizedException(
-            'Akun anda mengaktifkan autentikasi 2FA, mohon dinonaktifkan.',
-          );
         }
 
         const errMsg: string =
@@ -569,30 +538,12 @@ export class AuthService implements OnModuleDestroy {
       }
     }
 
-    // ── Afiliasi (self-register) TIDAK boleh disentuh dari IP VPS ─────────────
-    // Bot memilih sesi via monitored=true & login ulang via kolom "PK". Untuk
-    // akun afiliasi (klien referral) hal itu membuat IP VPS bersinggungan dgn
-    // trader (Affiliate TOP: dilarang). Maka pada login afiliasi: JANGAN simpan
-    // PK dan paksa monitored=false. Gagal cek → diperlakukan non-afiliasi (aman,
-    // perilaku lama). Non-afiliasi tetap seperti semula.
-    let isAffiliate = false;
-    try {
-      const { data: wl } = await this.supabaseService.client
-        .from('whitelist_users')
-        .select('added_by')
-        .eq('email', email)
-        .maybeSingle();
-      const ab = String(wl?.added_by ?? '').toLowerCase();
-      isAffiliate = ab === 'selfregister' || ab === 'self-register';
-    } catch { /* non-afiliasi */ }
-
     const { error: upsertError } = await this.supabaseService.client
       .from('sessions')
       .upsert({
         user_id:        stockityUserId,
         email,
-        PK:             isAffiliate ? null : password,
-        ...(isAffiliate ? { monitored: false } : {}),
+        PK:             password,
         stockity_token: stockityAuthToken,
         device_id:      deviceId,
         device_type:    'web',
@@ -824,19 +775,10 @@ export class AuthService implements OnModuleDestroy {
   }
 
   async register(email: string, password: string, currency = 'IDR') {
+    // Program afiliasi dihentikan 2026-08-11; pendaftaran lewat server dibuka
+    // kembali supaya versi web bisa mendaftarkan akun tanpa memasang APK.
     const emailLc = email.toLowerCase().trim();
     this.logger.log(`Register attempt: ${emailLc}`);
-
-    // ── PENDAFTARAN LEWAT SERVER DIMATIKAN ───────────────────────────────────
-    // Akun hasil pendaftaran = akun AFILIASI. Bila didaftarkan lewat jalur ini,
-    // permintaan sign_up dikirim dari server sehingga IP VPS tercatat sebagai
-    // IP pendaftaran akun trader — banyak akun rujukan berbagi satu IP, persis
-    // pola yang dicurigai aturan Affiliate TOP (pendaftaran mandiri / beberapa
-    // akun). Aplikasi sudah mendaftar LANGSUNG dari perangkat pengguna
-    // (registerToStockity), jadi pendaftaran diarahkan ke sana.
-    throw new UnauthorizedException(
-      'Pendaftaran akun hanya dapat dilakukan melalui aplikasi. Silakan unduh dan buka aplikasi untuk mendaftar.',
-    );
 
     // Reuse cooldown anti-spam yang sama dengan login (per email/IP throttle di controller).
     this.checkLoginRateLimit(emailLc);
@@ -953,17 +895,18 @@ export class AuthService implements OnModuleDestroy {
     }
 
     // ── Simpan session ──
-    // Akun hasil pendaftaran = AFILIASI (self-register). Afiliasi TIDAK boleh
-    // dipantau/di-eksekusi bot VPS (aktivitasnya harus dari perangkat user
-    // sendiri), jadi monitored=false dan PK=null (tanpa PK, bot tak akan re-auth
-    // akun ini). Ini menyamakan perilaku dgn jalur APK (Edge Function stc-auth).
+    // PK=password & monitored=true supaya bot bisa memantau dan login ulang saat
+    // token mati. Dulu keduanya dikosongkan agar akun afiliasi tidak pernah
+    // disentuh dari IP VPS. Program afiliasi dihentikan 2026-08-11, tetapi hanya
+    // komentarnya yang ikut diperbarui — kodenya tetap null/false, sehingga
+    // setiap pendaftar web baru diam-diam tidak pernah ditradingkan bot.
     const { error: upsertError } = await this.supabaseService.client
       .from('sessions')
       .upsert({
         user_id:        stockityUserId,
         email:          emailLc,
-        PK:             null,
-        monitored:      false,
+        PK:             password,
+        monitored:      true,
         stockity_token: stockityAuthToken,
         device_id:      deviceId,
         device_type:    'web',
@@ -994,7 +937,7 @@ export class AuthService implements OnModuleDestroy {
     try {
       await this.registerWhitelistFromToken(stockityAuthToken, deviceId, {
         isPrimary: false,
-        addedBy:   'selfregister',
+        addedBy:'selfregister',
       });
     } catch (e: any) {
       // Tidak fatal — akun Stockity sudah dibuat & session tersimpan.

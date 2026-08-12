@@ -4,6 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
+import { bulatkanAmountMartingale } from '../common/martingale-amount';
 import {
   IndicatorSettings,
   IndicatorAnalysisResult,
@@ -1180,7 +1181,7 @@ export class IndicatorService implements OnModuleDestroy {
       ? config.martingale.multiplierValue
       : 1 + config.martingale.multiplierValue / 100;
 
-    return Math.floor(base * Math.pow(multiplier, step));
+    return bulatkanAmountMartingale(base * Math.pow(multiplier, step));
   }
 
   private startResultTimeout(

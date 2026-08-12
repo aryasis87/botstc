@@ -5,6 +5,7 @@ import { TelegramSignalService } from './telegram-signal.service';
 import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { AISignalMonitorService } from './ai-signal-monitor.service';
 import { v4 as uuidv4 } from 'uuid';
+import { bulatkanAmountMartingale } from '../common/martingale-amount';
 import {
   AISignalOrderStatus,
   TelegramSignal,
@@ -1041,7 +1042,7 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
       config.martingale.multiplierType === 'FIXED'
         ? config.martingale.multiplierValue
         : 1 + config.martingale.multiplierValue / 100;
-    return Math.floor(config.baseAmount * Math.pow(multiplier, step));
+    return bulatkanAmountMartingale(config.baseAmount * Math.pow(multiplier, step));
   }
 
   private buildTradePayload(
