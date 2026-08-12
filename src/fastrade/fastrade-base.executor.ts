@@ -2,7 +2,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
-import { bulatkanAmountMartingale } from '../common/martingale-amount';
+import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
 import {
   FastradeConfig, FastradeLog, FastradeOrder, TrendType, FastradeTradeOrder,
   FastradeAlwaysSignalLossState,
@@ -344,6 +344,22 @@ export abstract class FastradeBaseExecutor {
         isDemoAccount: this.config.isDemoAccount,
       });
       this.callbacks.onStatusChange(`❌ Amount ${amount} bukan satuan mata uang penuh — bot dihentikan.`);
+      setTimeout(() => this.stop(), 300);
+      return null;
+    }
+
+    // Saldo kurang & aset tutup: sama-sama permanen, ditangani sekaligus
+    // lewat pembantu bersama supaya kalimatnya konsisten dengan mode lain.
+    const sebabHentiLain = galatOrderPermanen(result.error);
+    if (sebabHentiLain) {
+      this.logger.error(`[${this.userId}] ❌ ${sebabHentiLain} — bot dihentikan`);
+      this.callbacks.onLog({
+        id: uuidv4(), orderId, trend, amount, martingaleStep,
+        result: 'FAILED', executedAt: now, cycleNumber: cycleNum,
+        note: sebabHentiLain,
+        isDemoAccount: this.config.isDemoAccount,
+      });
+      this.callbacks.onStatusChange(`❌ ${sebabHentiLain} — bot dihentikan.`);
       setTimeout(() => this.stop(), 300);
       return null;
     }

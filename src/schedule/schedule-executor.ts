@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { StockityWebSocketClient, DealResultPayload } from './websocket-client';
-import { bulatkanAmountMartingale, amountDiLuarBatas } from '../common/martingale-amount';
+import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
 import {
   ScheduledOrder, ScheduleConfig, BotState,
   AlwaysSignalLossState, TradeOrderData,
@@ -412,17 +412,17 @@ export class ScheduleExecutor {
     // amount_min → stop bot, tidak ada gunanya retry
     // Ketiga galat amount bersifat PERMANEN — mengulang nilai yang sama
     // tidak akan pernah berhasil, jadi bot dihentikan, bukan dilanjutkan.
-    const batasAmount = amountDiLuarBatas(result.error);
-    if (batasAmount) {
-      this.logger.error(`[${this.userId}] ❌ Amount ${batasAmount} Stockity — bot dihentikan`);
-      this.callbacks.onStatusChange(`Trade gagal: amount ${batasAmount} Stockity. Cek konfigurasi.`);
+    const sebabHenti = galatOrderPermanen(result.error);
+    if (sebabHenti) {
+      this.logger.error(`[${this.userId}] ❌ ${sebabHenti} — bot dihentikan`);
+      this.callbacks.onStatusChange(`Trade gagal: ${sebabHenti}.`);
       this.executionInfoMap.delete(order.id);
-      this.callbacks.onOrderFailed?.(order.id, `Amount ${batasAmount} Stockity`).catch(() => {});
+      this.callbacks.onOrderFailed?.(order.id, sebabHenti).catch(() => {});
       this.callbacks.onLog({
         id: uuidv4(), orderId: order.id, time: order.time,
         trend: order.trend, amount, martingaleStep: step,
         result: 'FAILED', executedAt: Date.now(),
-        note: `Amount ${batasAmount} Stockity`,
+        note: sebabHenti,
         isDemoAccount: this.config.isDemoAccount,
       });
       setTimeout(async () => {
@@ -695,10 +695,10 @@ export class ScheduleExecutor {
     const dealId = result.dealId;
 
     // Pada martingale ini paling sering kena: nilainya berlipat tiap langkah.
-    const batasAmountMg = amountDiLuarBatas(result.error);
-    if (batasAmountMg) {
-      this.logger.error(`[${this.userId}] ❌ Martingale: amount ${batasAmountMg} — bot dihentikan`);
-      this.callbacks.onStatusChange(`Martingale gagal: amount ${batasAmountMg} Stockity. Cek konfigurasi.`);
+    const sebabHentiMg = galatOrderPermanen(result.error);
+    if (sebabHentiMg) {
+      this.logger.error(`[${this.userId}] ❌ Martingale: ${sebabHentiMg} — bot dihentikan`);
+      this.callbacks.onStatusChange(`Martingale gagal: ${sebabHentiMg}.`);
       this.executionInfoMap.delete(order.id);
       this.activeMartingaleOrderId = undefined;
       this.martingaleStartTime = undefined;
@@ -707,7 +707,7 @@ export class ScheduleExecutor {
         id: uuidv4(), orderId: order.id, time: order.time, trend: order.trend,
         amount, martingaleStep: step,
         result: 'FAILED', executedAt: Date.now(),
-        note: `Martingale step ${step}: amount ${batasAmountMg} Stockity`,
+        note: `Martingale step ${step}: ${sebabHentiMg}`,
         isDemoAccount: this.config.isDemoAccount,
       });
       setTimeout(async () => {

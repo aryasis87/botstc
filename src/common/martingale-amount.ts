@@ -35,17 +35,27 @@ export function bulatkanAmountMartingale(nilai: number): number {
 }
 
 /**
- * Menerjemahkan kode galat Stockity yang menandakan amount tidak bisa
- * diterima, jadi frasa yang bisa langsung dipakai di pesan ke pengguna.
+ * Menerjemahkan penolakan Stockity yang TIDAK akan hilang kalau dicoba lagi,
+ * jadi kalimat yang bisa langsung ditunjukkan ke pengguna.
  *
- * Mengembalikan null bila galatnya BUKAN soal amount (mis. koneksi putus).
- * Bedanya penting: hanya kegagalan permanen yang layak menghentikan bot —
- * gangguan sesaat tidak boleh ikut mematikan bot orang.
+ * Mengembalikan null untuk galat yang sifatnya sesaat. Bedanya penting:
+ * hanya kegagalan permanen yang layak menghentikan bot — koneksi yang
+ * terputus sebentar tidak boleh ikut mematikan bot orang.
+ *
+ * Kalimatnya UTUH, bukan potongan. Versi sebelumnya mengembalikan potongan
+ * yang hanya masuk akal disisipkan ke "Amount ___ Stockity", dan itu langsung
+ * buntu begitu ada sebab yang bukan soal amount.
  */
-export function amountDiLuarBatas(err: string | undefined): string | null {
-  if (err === 'amount_min') return 'di bawah minimum';
-  if (err === 'amount_max') return 'melebihi maksimum';
-  // Kelipatan 100 sen = satu satuan mata uang penuh. Ditolak permanen.
-  if (err === 'amount_invalid') return 'bukan satuan mata uang penuh';
+export function galatOrderPermanen(err: string | undefined): string | null {
+  if (err === 'amount_min') return 'Amount di bawah minimum Stockity';
+  if (err === 'amount_max') return 'Amount melebihi maksimum Stockity';
+  // Kelipatan 100 sen = satu satuan mata uang penuh.
+  if (err === 'amount_invalid') return 'Amount bukan satuan mata uang penuh';
+  // Saldo bisa bertambah nanti, tapi selama belum, setiap order pasti gagal —
+  // lebih baik berhenti dan bilang, daripada menembak terus tanpa kabar.
+  if (err === 'amount_balance') return 'Saldo tidak cukup untuk amount ini';
+  // Aset OTC tutup di hari kerja — ini sebab yang paling sering disalahartikan
+  // sebagai gangguan koneksi.
+  if (err === 'expire_at') return 'Aset sedang tutup — pilih aset lain';
   return null;
 }

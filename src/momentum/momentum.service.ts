@@ -4,7 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
-import { bulatkanAmountMartingale, amountDiLuarBatas } from '../common/martingale-amount';
+import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
 import {
   MomentumType,
   MomentumSignal,
@@ -860,10 +860,10 @@ export class MomentumService implements OnModuleDestroy {
       // FIX #new-3: stop the bot immediately on amount_min (same as ScheduleExecutor)
       // Ketiga galat amount bersifat PERMANEN — mengulang nilai yang sama
       // tidak akan pernah berhasil, jadi bot dihentikan, bukan dilanjutkan.
-      const batasAmount = amountDiLuarBatas(tradeResult.error);
-      if (batasAmount) {
-        this.logger.error(`[${userId}] ❌ Amount ${batasAmount} Stockity — bot dihentikan`);
-        this.updateLog(userId, orderId, { result: 'FAILED', note: `Amount ${batasAmount} Stockity` });
+      const sebabHenti = galatOrderPermanen(tradeResult.error);
+      if (sebabHenti) {
+        this.logger.error(`[${userId}] ❌ ${sebabHenti} — bot dihentikan`);
+        this.updateLog(userId, orderId, { result: 'FAILED', note: sebabHenti });
         mode.activeMomentumOrders.delete(signal.momentumType);
         mode.momentumOrders.delete(orderId);
         this.stopMomentumMode(userId);
@@ -942,10 +942,10 @@ export class MomentumService implements OnModuleDestroy {
       );
 
       // FIX #new-3: amount_min on always-signal step
-      const batasAmountAS = amountDiLuarBatas(tradeResult.error);
-      if (batasAmountAS) {
-        this.logger.error(`[${userId}] ❌ AlwaysSignal: amount ${batasAmountAS} — bot dihentikan`);
-        this.updateLog(userId, orderId, { result: 'FAILED', note: `Amount ${batasAmountAS} Stockity` }, step);
+      const sebabHentiAS = galatOrderPermanen(tradeResult.error);
+      if (sebabHentiAS) {
+        this.logger.error(`[${userId}] ❌ AlwaysSignal: ${sebabHentiAS} — bot dihentikan`);
+        this.updateLog(userId, orderId, { result: 'FAILED', note: sebabHentiAS }, step);
         mode.alwaysSignalLossState = null;
         this.stopMomentumMode(userId);
         return;
@@ -1256,10 +1256,10 @@ export class MomentumService implements OnModuleDestroy {
 
     // FIX #new-3: amount_min on martingale step
     // Pada martingale ini paling sering kena: nilainya berlipat tiap langkah.
-    const batasAmountMg = amountDiLuarBatas(tradeResult.error);
-    if (batasAmountMg) {
-      this.logger.error(`[${userId}] ❌ Martingale step ${step}: amount ${batasAmountMg} — bot dihentikan`);
-      this.updateLog(userId, parentOrderId, { result: 'FAILED', note: `Martingale step ${step}: amount ${batasAmountMg}` }, step);
+    const sebabHentiMg = galatOrderPermanen(tradeResult.error);
+    if (sebabHentiMg) {
+      this.logger.error(`[${userId}] ❌ Martingale step ${step}: ${sebabHentiMg} — bot dihentikan`);
+      this.updateLog(userId, parentOrderId, { result: 'FAILED', note: `Martingale step ${step}: ${sebabHentiMg}` }, step);
       mode.activeMartingaleOrders.delete(parentOrderId);
       mode.activeMomentumOrders.delete(momentumType);
       this.stopMomentumMode(userId);

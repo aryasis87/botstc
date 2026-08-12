@@ -4,7 +4,7 @@ import { TradeOrderData } from './types';
 
 export interface PlaceTradeResult {
   dealId: string | null;
-  error?: 'amount_min' | 'amount_max' | 'amount_invalid' | 'duplicate' | 'unknown'
+  error?: 'amount_min' | 'amount_max' | 'amount_invalid' | 'amount_balance' | 'expire_at' | 'duplicate' | 'unknown'
         // Kode diagnostik jalur WebSocket — dipakai untuk melacak kegagalan
         // martingale yang dulu hanya muncul sebagai "unknown".
         | 'ws_timeout' | 'ws_not_open' | 'ws_destroyed';
@@ -236,6 +236,11 @@ export class StockityWebSocketClient {
               // gangguan sesaat dan mengulanginya — padahal nilai yang sama
               // tidak akan pernah diterima.
               reasons.includes('deal_amount_invalid') ? 'amount_invalid' :
+              // Saldo tidak cukup, dan aset sedang tutup. Keduanya dulu jadi
+              // 'unknown', jadi bot mengulanginya tanpa henti tanpa satu pun
+              // petunjuk untuk pengguna.
+              reasons.includes('deal_amount_balance') ? 'amount_balance' :
+              reasons.includes('deal_expire_at') ? 'expire_at' :
               reasons.includes('duplicate_deal')  ? 'duplicate'  : 'unknown';
             pending.resolve({ dealId: null, error });
             this.pendingTrades.delete(ref);

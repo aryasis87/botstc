@@ -4,7 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
-import { bulatkanAmountMartingale, amountDiLuarBatas } from '../common/martingale-amount';
+import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
 import {
   IndicatorSettings,
   IndicatorAnalysisResult,
@@ -902,9 +902,9 @@ export class IndicatorService implements OnModuleDestroy {
       // pun dicoba — sinyal berikutnya cuma mengulangi nilai yang sama. Mode
       // lain sudah berhenti pada keadaan ini; Indicator dulu tidak, sehingga
       // botnya berputar tanpa akhir sampai pengguna sadar sendiri.
-      const batas0 = amountDiLuarBatas(tradeResult?.error);
-      if (batas0) {
-        this.logger.error(`[${userId}] ❌ Amount ${amount} ${batas0} Stockity — bot dihentikan`);
+      const sebabHenti = galatOrderPermanen(tradeResult?.error);
+      if (sebabHenti) {
+        this.logger.error(`[${userId}] ❌ ${sebabHenti} (amount ${amount}) — bot dihentikan`);
         this.writeLog(userId, {
           id: `${orderId}_s0`,
           orderId,
@@ -915,7 +915,7 @@ export class IndicatorService implements OnModuleDestroy {
           result: 'FAILED',
           indicatorType: mode.analysisResult?.indicatorType ?? 'UNKNOWN',
           cycleNumber: mode.cycleNumber,
-          note: `Amount ${batas0} Stockity — bot dihentikan. Cek konfigurasi amount.`,
+          note: `${sebabHenti} — bot dihentikan.`,
           isDemoAccount: config.isDemoAccount,
         });
         mode.isTradeExecuted = false;
@@ -1192,12 +1192,12 @@ export class IndicatorService implements OnModuleDestroy {
       // Lihat catatan di jalur trade pertama: amount di luar batas bersifat
       // permanen. Pada martingale ini lebih mudah terjadi karena nilainya
       // berlipat tiap langkah dan cepat menembus maksimum.
-      const batasM = amountDiLuarBatas(tradeResult?.error);
-      if (batasM) {
-        this.logger.error(`[${userId}] ❌ Amount ${martingaleAmount} ${batasM} Stockity (langkah ${step}) — bot dihentikan`);
+      const sebabHentiMg = galatOrderPermanen(tradeResult?.error);
+      if (sebabHentiMg) {
+        this.logger.error(`[${userId}] ❌ ${sebabHentiMg} (amount ${martingaleAmount}, langkah ${step}) — bot dihentikan`);
         await this.handleCycleCompletion(
           userId, 'MARTINGALE_FAILED',
-          `Amount ${batasM} Stockity pada langkah ${step}. Kurangi pengali atau amount dasar.`,
+          `${sebabHentiMg} pada langkah ${step}.`,
         );
         setTimeout(() => { void this.stopIndicatorMode(userId); }, 300);
         return;
