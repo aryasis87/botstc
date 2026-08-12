@@ -4,7 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
-import { bulatkanAmountMartingale } from '../common/martingale-amount';
+import { bulatkanAmountMartingale, amountDiLuarBatas } from '../common/martingale-amount';
 import {
   IndicatorSettings,
   IndicatorAnalysisResult,
@@ -107,19 +107,6 @@ interface ActiveMode {
   logs: IndicatorLog[];
   // Always Signal state
   alwaysSignalLossState: IndicatorAlwaysSignalLossState | null;
-}
-
-/**
- * Menerjemahkan kode galat Stockity yang menandakan amount di luar batas.
- * Mengembalikan null bila galatnya bukan soal batas amount (mis. gangguan
- * koneksi), karena hanya keadaan PERMANEN yang layak menghentikan bot.
- */
-function amountDiLuarBatas(err: string | undefined): string | null {
-  if (err === 'amount_min') return 'di bawah minimum';
-  if (err === 'amount_max') return 'melebihi maksimum';
-  // Kelipatan 100 sen = satu satuan mata uang penuh. Ditolak permanen.
-  if (err === 'amount_invalid') return 'bukan satuan mata uang penuh';
-  return null;
 }
 
 @Injectable()

@@ -33,3 +33,19 @@ export function bulatkanAmountMartingale(nilai: number): number {
   const bulat = Math.round(nilai / 100) * 100;
   return bulat < 100 ? 100 : bulat;
 }
+
+/**
+ * Menerjemahkan kode galat Stockity yang menandakan amount tidak bisa
+ * diterima, jadi frasa yang bisa langsung dipakai di pesan ke pengguna.
+ *
+ * Mengembalikan null bila galatnya BUKAN soal amount (mis. koneksi putus).
+ * Bedanya penting: hanya kegagalan permanen yang layak menghentikan bot —
+ * gangguan sesaat tidak boleh ikut mematikan bot orang.
+ */
+export function amountDiLuarBatas(err: string | undefined): string | null {
+  if (err === 'amount_min') return 'di bawah minimum';
+  if (err === 'amount_max') return 'melebihi maksimum';
+  // Kelipatan 100 sen = satu satuan mata uang penuh. Ditolak permanen.
+  if (err === 'amount_invalid') return 'bukan satuan mata uang penuh';
+  return null;
+}
