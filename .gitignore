@@ -31,3 +31,10 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# Artefak sekali-pakai yang pernah menyimpan kredensial/data pribadi.
+# Jangan sampai masuk lagi — repo ini PUBLIK.
+enable-2fa.js
+2fa-qr.png
+*.har
+scripts/wd-*.sh
