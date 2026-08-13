@@ -43,8 +43,12 @@ export class NotifyService {
 
   private static async kirim(teks: string): Promise<void> {
     // Baca env di sini (bukan saat kelas dimuat) agar tak bergantung urutan boot.
-    const token = (process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
-    const chatIds = (process.env.SUPER_ADMIN_CHAT_IDS ?? '')
+    // Notifikasi bot-berhenti dikirim lewat BOT UTAMA (@san103abot) melalui
+    // NOTIFY_BOT_TOKEN — supaya @aktivasiKOALABOT (TELEGRAM_BOT_TOKEN) tetap
+    // fokus hanya untuk notifikasi aktivasi. Fallback ke TELEGRAM_BOT_TOKEN
+    // bila NOTIFY_BOT_TOKEN belum diisi, agar tak diam-diam berhenti mengirim.
+    const token = (process.env.NOTIFY_BOT_TOKEN ?? process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
+    const chatIds = (process.env.NOTIFY_CHAT_IDS ?? process.env.SUPER_ADMIN_CHAT_IDS ?? '')
       .split(',').map((s) => s.trim()).filter(Boolean);
     if (!token || !chatIds.length) return;
 
