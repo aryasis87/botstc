@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { StockityWebSocketClient, DealResultPayload } from './websocket-client';
 import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
+import { NotifyService } from '../common/notify.service';
 import {
   ScheduledOrder, ScheduleConfig, BotState,
   AlwaysSignalLossState, TradeOrderData,
@@ -415,6 +416,7 @@ export class ScheduleExecutor {
     const sebabHenti = galatOrderPermanen(result.error);
     if (sebabHenti) {
       this.logger.error(`[${this.userId}] ❌ ${sebabHenti} — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, 'Schedule', sebabHenti);
       this.callbacks.onStatusChange(`Trade gagal: ${sebabHenti}.`);
       this.executionInfoMap.delete(order.id);
       this.callbacks.onOrderFailed?.(order.id, sebabHenti).catch(() => {});
@@ -698,6 +700,7 @@ export class ScheduleExecutor {
     const sebabHentiMg = galatOrderPermanen(result.error);
     if (sebabHentiMg) {
       this.logger.error(`[${this.userId}] ❌ Martingale: ${sebabHentiMg} — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, 'Schedule', sebabHentiMg);
       this.callbacks.onStatusChange(`Martingale gagal: ${sebabHentiMg}.`);
       this.executionInfoMap.delete(order.id);
       this.activeMartingaleOrderId = undefined;

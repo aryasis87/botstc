@@ -8,6 +8,7 @@ import { UpdateScheduleConfigDto } from './dto/update-config.dto';
 import { ScheduledOrder, ScheduleConfig, ExecutionLog, StockityAsset } from './types';
 import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
+import { PreflightService } from '../common/preflight.service';
 
 const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
 const BASE_URL = 'https://api.stockity1.id';
@@ -83,6 +84,7 @@ export class ScheduleService implements OnModuleInit, OnModuleDestroy {
     private readonly supabaseService: SupabaseService,
     private readonly authService: AuthService,
     private readonly trackingService: OrderTrackingService,
+    private readonly preflight: PreflightService,
   ) {}
 
   async onModuleInit() {
@@ -384,6 +386,7 @@ export class ScheduleService implements OnModuleInit, OnModuleDestroy {
     }
 
     const config = await this.getConfig(userId);
+    await this.preflight.validasi(userId, config, 'Schedule');
     if (!config.asset?.ric) {
       throw new Error(
         'Asset belum dikonfigurasi. ' +

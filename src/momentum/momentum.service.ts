@@ -5,6 +5,8 @@ import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
 import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
+import { PreflightService } from '../common/preflight.service';
+import { NotifyService } from '../common/notify.service';
 import {
   MomentumType,
   MomentumSignal,
@@ -150,6 +152,7 @@ export class MomentumService implements OnModuleDestroy {
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly authService: AuthService,
+    private readonly preflight: PreflightService,
   ) {}
 
   onModuleDestroy() {
@@ -241,6 +244,7 @@ export class MomentumService implements OnModuleDestroy {
     if (!session) throw new Error('Session tidak ditemukan');
 
     const config = await this.getConfig(userId);
+    await this.preflight.validasi(userId, config, 'Momentum');
     if (!config.asset?.ric) throw new Error('Asset belum dikonfigurasi');
 
     const ws = new StockityWebSocketClient(
@@ -863,6 +867,7 @@ export class MomentumService implements OnModuleDestroy {
       const sebabHenti = galatOrderPermanen(tradeResult.error);
       if (sebabHenti) {
         this.logger.error(`[${userId}] ❌ ${sebabHenti} — bot dihentikan`);
+        NotifyService.botBerhenti(userId, 'Momentum', sebabHenti);
         this.updateLog(userId, orderId, { result: 'FAILED', note: sebabHenti });
         mode.activeMomentumOrders.delete(signal.momentumType);
         mode.momentumOrders.delete(orderId);
@@ -945,6 +950,7 @@ export class MomentumService implements OnModuleDestroy {
       const sebabHentiAS = galatOrderPermanen(tradeResult.error);
       if (sebabHentiAS) {
         this.logger.error(`[${userId}] ❌ AlwaysSignal: ${sebabHentiAS} — bot dihentikan`);
+        NotifyService.botBerhenti(userId, 'Momentum', sebabHentiAS);
         this.updateLog(userId, orderId, { result: 'FAILED', note: sebabHentiAS }, step);
         mode.alwaysSignalLossState = null;
         this.stopMomentumMode(userId);
@@ -1259,6 +1265,7 @@ export class MomentumService implements OnModuleDestroy {
     const sebabHentiMg = galatOrderPermanen(tradeResult.error);
     if (sebabHentiMg) {
       this.logger.error(`[${userId}] ❌ Martingale step ${step}: ${sebabHentiMg} — bot dihentikan`);
+      NotifyService.botBerhenti(userId, 'Momentum', sebabHentiMg);
       this.updateLog(userId, parentOrderId, { result: 'FAILED', note: `Martingale step ${step}: ${sebabHentiMg}` }, step);
       mode.activeMartingaleOrders.delete(parentOrderId);
       mode.activeMomentumOrders.delete(momentumType);

@@ -6,6 +6,7 @@ import { StockityWebSocketClient } from '../schedule/websocket-client';
 import { AISignalMonitorService } from './ai-signal-monitor.service';
 import { v4 as uuidv4 } from 'uuid';
 import { bulatkanAmountMartingale } from '../common/martingale-amount';
+import { PreflightService } from '../common/preflight.service';
 import {
   AISignalOrderStatus,
   TelegramSignal,
@@ -84,6 +85,7 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
     private readonly authService: AuthService,
     private readonly aiSignalMonitor: AISignalMonitorService,
     private readonly telegramSignalService: TelegramSignalService,
+    private readonly preflight: PreflightService,
   ) {}
 
   async onModuleInit() {
@@ -207,6 +209,7 @@ export class AISignalService implements OnModuleInit, OnModuleDestroy {
     if (!session) throw new Error('Session tidak ditemukan');
 
     const config = await this.getConfig(userId);
+    await this.preflight.validasi(userId, config, 'AI Signal');
     if (!config.asset?.ric) throw new Error('Asset belum dikonfigurasi');
 
     const ws = new StockityWebSocketClient(

@@ -7,6 +7,7 @@ import { CtcExecutor } from './ctc-executor';
 import { FastradeBaseExecutor, FastradeExecutorCallbacks, SessionInfo } from './fastrade-base.executor';
 import { FastradeConfig, FastradeLog, FastradeMode } from './fastrade-types';
 import { StartFastradeDto } from './dto/start-fastrade.dto';
+import { PreflightService } from '../common/preflight.service';
 
 @Injectable()
 export class FastradeService implements OnModuleDestroy {
@@ -27,6 +28,7 @@ export class FastradeService implements OnModuleDestroy {
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly authService: AuthService,
+    private readonly preflight: PreflightService,
   ) {}
 
   async onModuleDestroy() {
@@ -72,6 +74,7 @@ export class FastradeService implements OnModuleDestroy {
       stopProfit: dto.stopProfit ?? 0,
       reversalSteps: dto.reversalSteps,
     };
+    await this.preflight.validasi(userId, config, 'Fastrade');
 
     // Create fresh WS connection
     const ws = new StockityWebSocketClient(

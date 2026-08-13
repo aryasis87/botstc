@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { curlGet } from '../common/http-utils';
 import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocket-client';
 import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
+import { NotifyService } from '../common/notify.service';
 import {
   FastradeConfig, FastradeLog, FastradeOrder, TrendType, FastradeTradeOrder,
   FastradeAlwaysSignalLossState,
@@ -139,6 +140,7 @@ export abstract class FastradeBaseExecutor {
 
     if (retryCount >= this.MAX_RETRIES) {
       this.logger.error(`[${this.userId}] ${this.modeName}: Trade gagal ${this.MAX_RETRIES}x — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, this.modeName, `Trade gagal ${this.MAX_RETRIES}x berturut-turut`);
       this.callbacks.onStatusChange(`${this.modeName}: Trade gagal ${this.MAX_RETRIES}x — cek koneksi/amount`);
       this.stop();
       return;
@@ -311,6 +313,7 @@ export abstract class FastradeBaseExecutor {
 
     if (result.error === 'amount_min') {
       this.logger.error(`[${this.userId}] ❌ Amount ${amount} di bawah minimum Stockity — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, this.modeName, 'Amount di bawah minimum Stockity');
       this.callbacks.onLog({
         id: uuidv4(), orderId, trend, amount, martingaleStep,
         result: 'FAILED', executedAt: now, cycleNumber: cycleNum,
@@ -324,6 +327,7 @@ export abstract class FastradeBaseExecutor {
 
     if (result.error === 'amount_max') {
       this.logger.error(`[${this.userId}] ❌ Amount ${amount} melebihi maksimum Stockity — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, this.modeName, 'Amount melebihi maksimum Stockity');
       this.callbacks.onLog({
         id: uuidv4(), orderId, trend, amount, martingaleStep,
         result: 'FAILED', executedAt: now, cycleNumber: cycleNum,
@@ -337,6 +341,7 @@ export abstract class FastradeBaseExecutor {
 
     if (result.error === 'amount_invalid') {
       this.logger.error(`[${this.userId}] ❌ Amount ${amount} bukan satuan mata uang penuh — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, this.modeName, 'Amount bukan satuan mata uang penuh');
       this.callbacks.onLog({
         id: uuidv4(), orderId, trend, amount, martingaleStep,
         result: 'FAILED', executedAt: now, cycleNumber: cycleNum,
@@ -353,6 +358,7 @@ export abstract class FastradeBaseExecutor {
     const sebabHentiLain = galatOrderPermanen(result.error);
     if (sebabHentiLain) {
       this.logger.error(`[${this.userId}] ❌ ${sebabHentiLain} — bot dihentikan`);
+      NotifyService.botBerhenti(this.userId, this.modeName, sebabHentiLain);
       this.callbacks.onLog({
         id: uuidv4(), orderId, trend, amount, martingaleStep,
         result: 'FAILED', executedAt: now, cycleNumber: cycleNum,

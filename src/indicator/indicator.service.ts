@@ -5,6 +5,8 @@ import { StockityWebSocketClient, DealResultPayload } from '../schedule/websocke
 import { curlGet } from '../common/http-utils';
 import { v4 as uuidv4 } from 'uuid';
 import { bulatkanAmountMartingale, galatOrderPermanen } from '../common/martingale-amount';
+import { PreflightService } from '../common/preflight.service';
+import { NotifyService } from '../common/notify.service';
 import {
   IndicatorSettings,
   IndicatorAnalysisResult,
@@ -118,6 +120,7 @@ export class IndicatorService implements OnModuleDestroy {
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly authService: AuthService,
+    private readonly preflight: PreflightService,
   ) {}
 
   async onModuleDestroy() {
@@ -202,6 +205,7 @@ export class IndicatorService implements OnModuleDestroy {
     if (!session) throw new Error('Session tidak ditemukan');
 
     const config = await this.getConfig(userId);
+    await this.preflight.validasi(userId, config, 'Indicator');
     if (!config.asset?.ric) {
       throw new Error('Asset belum dikonfigurasi');
     }
@@ -905,6 +909,7 @@ export class IndicatorService implements OnModuleDestroy {
       const sebabHenti = galatOrderPermanen(tradeResult?.error);
       if (sebabHenti) {
         this.logger.error(`[${userId}] ❌ ${sebabHenti} (amount ${amount}) — bot dihentikan`);
+        NotifyService.botBerhenti(userId, 'Indicator', sebabHenti);
         this.writeLog(userId, {
           id: `${orderId}_s0`,
           orderId,
@@ -1195,6 +1200,7 @@ export class IndicatorService implements OnModuleDestroy {
       const sebabHentiMg = galatOrderPermanen(tradeResult?.error);
       if (sebabHentiMg) {
         this.logger.error(`[${userId}] ❌ ${sebabHentiMg} (amount ${martingaleAmount}, langkah ${step}) — bot dihentikan`);
+        NotifyService.botBerhenti(userId, 'Indicator', sebabHentiMg);
         await this.handleCycleCompletion(
           userId, 'MARTINGALE_FAILED',
           `${sebabHentiMg} pada langkah ${step}.`,
@@ -1372,6 +1378,7 @@ export class IndicatorService implements OnModuleDestroy {
       } else {
         // Old: session null → bot diam (tanpa log/stop) → status Supabase tetap RUNNING selamanya.
         this.logger.error(`[${userId}] Session expired atau tidak ditemukan — bot dihentikan otomatis`);
+        NotifyService.botBerhenti(userId, 'Indicator', 'Sesi Stockity kedaluwarsa');
         await this.stopIndicatorMode(userId);
       }
     } else {

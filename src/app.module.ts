@@ -16,6 +16,7 @@ import { AISignalModule } from './aisignal/aisignal.module';
 import { TodayProfitModule } from './today-profit/today-profit.module';
 import { AdminModule } from './admin/admin.module';
 import { ActivationModule } from './activation/activation.module';
+import { SafetyModule } from './common/safety.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { ActivationModule } from './activation/activation.module';
     TodayProfitModule,
     AdminModule,
     ActivationModule,
+    SafetyModule,
   ],
   providers: [
     // Guard throttle global — per-user (token) / per-IP (anonim).
