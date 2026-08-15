@@ -41,6 +41,34 @@ export class NotifyService {
     void NotifyService.kirim(teks);
   }
 
+  /**
+   * Hormati status logout. Kalau chat ini sudah /stop di bot (is_active=false
+   * di bot_admins), notifikasi bot-berhenti pun TIDAK dikirim — /stop harus
+   * benar-benar menghentikan SEMUA notifikasi, bukan cuma deposit/penarikan
+   * dari bot Python (yang punya gerbang is_active sendiri).
+   *
+   * FAIL-OPEN: kalau query gagal atau kredensial tak ada, tetap kirim. Lebih
+   * baik over-notify daripada melewatkan peringatan bot berhenti.
+   */
+  private static async bolehKirim(chatId: string): Promise<boolean> {
+    const url = (process.env.SUPABASE_URL ?? '').trim();
+    const key = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY ?? '').trim();
+    if (!url || !key) return true;
+    try {
+      const r = await fetch(
+        `${url}/rest/v1/bot_admins?chat_id=eq.${encodeURIComponent(chatId)}&select=is_active`,
+        { headers: { apikey: key, Authorization: `Bearer ${key}` } },
+      );
+      if (!r.ok) return true;
+      const rows = (await r.json()) as Array<{ is_active?: boolean }>;
+      // Baris ada & is_active=false → sudah logout, lewati.
+      if (Array.isArray(rows) && rows.length && rows[0]?.is_active === false) return false;
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
   private static async kirim(teks: string): Promise<void> {
     // Baca env di sini (bukan saat kelas dimuat) agar tak bergantung urutan boot.
     // Notifikasi bot-berhenti dikirim lewat BOT UTAMA (@san103abot) melalui
@@ -53,6 +81,8 @@ export class NotifyService {
     if (!token || !chatIds.length) return;
 
     for (const chatId of chatIds) {
+      // Lewati chat yang sudah logout dari bot.
+      if (!(await NotifyService.bolehKirim(chatId))) continue;
       try {
         await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
