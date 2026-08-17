@@ -25,21 +25,29 @@ export class ActivationService {
     if (buf.length > 8 * 1024 * 1024) throw new BadRequestException('Bukti terlalu besar');
 
     const brand = app === 'koala' ? 'Koala S Pro' : 'STC AutoTrade';
-    const isAi = feature === 'aisignal';
+    const feat = feature === 'aisignal' ? 'aisignal' : feature === 'blitz5s' ? 'blitz5s' : 'real';
 
-    // Simpan jejak pengajuan (best-effort; tak menggagalkan kalau tabel belum ada).
+    // Simpan jejak pengajuan (best-effort; tak menggagalkan kalau tabel belum ada
+    // atau kolom feature membatasi nilai — notifikasi Telegram tetap terkirim).
     try {
       await this.supabase.client.from('real_activation_requests').insert({
-        app, feature: isAi ? 'aisignal' : 'real', name, stockity_id: stockityId, status: 'pending', created_at: new Date().toISOString(),
+        app, feature: feat, name, stockity_id: stockityId, status: 'pending', created_at: new Date().toISOString(),
       });
     } catch (e) { this.logger.warn(`insert request gagal (abaikan): ${e}`); }
 
-    const caption = isAi
+    const caption =
+      feat === 'aisignal'
       ? `🔵 PENGAJUAN AKTIVASI AI SIGNAL — ${brand}\n\n` +
         `👤 Nama: ${name}\n` +
         `🆔 ID Stockity: ${stockityId}\n` +
         `💰 Rp 50.000 / bulan (QRIS)\n\n` +
         `➡️ Setujui: aktifkan AI Signal untuk ID ${stockityId} di panel Super Admin (Aktivasi AI Signal).`
+      : feat === 'blitz5s'
+      ? `⚡ PENGAJUAN AKTIVASI 5st (BLITZ 5 DETIK) — ${brand}\n\n` +
+        `👤 Nama: ${name}\n` +
+        `🆔 ID Stockity: ${stockityId}\n` +
+        `💰 Rp 85.000 / bulan (QRIS)\n\n` +
+        `➡️ Setujui: aktifkan 5st untuk ID ${stockityId} di panel Super Admin (Aktivasi 5st).`
       : `🟢 PENGAJUAN AKTIVASI REAL — ${brand}\n\n` +
         `👤 Nama: ${name}\n` +
         `🆔 ID Stockity: ${stockityId}\n` +

@@ -11,7 +11,7 @@ export class ActivationController {
   async request(@Body() body: { app?: string; name?: string; stockityId?: string; proof?: string; feature?: string }) {
     return this.svc.request(
       body?.app === 'koala' ? 'koala' : 'stc',
-      body?.feature === 'aisignal' ? 'aisignal' : 'real',
+      body?.feature === 'aisignal' ? 'aisignal' : body?.feature === 'blitz5s' ? 'blitz5s' : 'real',
       String(body?.name ?? '').trim(),
       String(body?.stockityId ?? '').trim(),
       String(body?.proof ?? ''),
