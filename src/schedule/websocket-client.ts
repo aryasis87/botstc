@@ -349,6 +349,8 @@ export class StockityWebSocketClient {
           option_type: order.optionType,
           ric: order.ric,
           trend: order.trend,
+          // 5st (blitz) menyertakan field ini di frame aslinya; turbo tak terpengaruh.
+          ...(order.optionType === 'blitz' ? { tournament_id: null, is_state: false } : {}),
         },
         ref,
       });

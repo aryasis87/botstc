@@ -415,6 +415,24 @@ export abstract class FastradeBaseExecutor {
    * minimal ~48s, memberikan 3 detik buffer untuk prosesan server.
    */
   protected buildInstantTrade(trend: TrendType, amount: number): FastradeTradeOrder {
+    // 5st (BLITZ): durasi TETAP 5 detik, tidak terikat batas menit candle.
+    // Sesuai frame asli bo:create — option_type='blitz', created_at & expire_at
+    // dalam MILIDETIK (expire = created_at + 5000). Berbeda dari turbo yang
+    // memakai expire_at dalam DETIK + boundary menit.
+    if (this.config.blitz) {
+      const now = Date.now();
+      return {
+        amount,
+        createdAt: now,
+        dealType: this.config.isDemoAccount ? 'demo' : 'real',
+        expireAt: now + 5000,
+        iso: this.config.currencyIso,
+        optionType: 'blitz',
+        ric: this.config.asset.ric,
+        trend,
+      };
+    }
+
     const nowMs = Date.now();
     const createdAtSeconds = Math.floor(nowMs / 1000) + 1;
     const remainingInMinute = 60 - (createdAtSeconds % 60);

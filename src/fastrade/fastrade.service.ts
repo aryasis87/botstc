@@ -73,6 +73,7 @@ export class FastradeService implements OnModuleDestroy {
       stopLoss: dto.stopLoss ?? 0,
       stopProfit: dto.stopProfit ?? 0,
       reversalSteps: dto.reversalSteps,
+      blitz: dto.blitz,
     };
     await this.preflight.validasi(userId, config, 'Fastrade');
 

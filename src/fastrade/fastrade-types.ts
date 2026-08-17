@@ -28,6 +28,8 @@ export interface FastradeConfig {
   stopLoss?: number;
   stopProfit?: number;
   reversalSteps?: number[];
+  /** Mode 5st: eksekusi order BLITZ berdurasi tetap 5 detik (option_type='blitz'). */
+  blitz?: boolean;
 }
 
 export interface FastradeOrder {

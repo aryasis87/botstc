@@ -37,4 +37,7 @@ export class StartFastradeDto {
   @IsOptional() @IsNumber() @Min(0) stopLoss?: number;
   @IsOptional() @IsNumber() @Min(0) stopProfit?: number;
   @IsOptional() @IsArray() @IsNumber({}, { each: true }) reversalSteps?: number[];
+
+  /** Mode 5st: order BLITZ 5 detik (mode tetap 'FTT'). */
+  @IsOptional() @IsBoolean() blitz?: boolean;
 }
