@@ -12,6 +12,12 @@ import {
 const BASE_URL = 'https://api.stockity1.id';
 const MAX_PRICE_FETCH_TIME   = 5;
 const FALLBACK_MATCH_WINDOW_MS = 120_000;
+
+// 5st (blitz): saat Stockity menolak dgn overlimit_blitz_deals (batas jumlah/laju
+// deal blitz), tunggu selama ini lalu ulang — cukup untuk deal blitz lama (5 detik)
+// menutup & slot terbebas. MAX_WAITS jadi pengaman agar tak menunggu selamanya.
+const BLITZ_BUSY_DELAY_MS  = 8_000;
+const BLITZ_BUSY_MAX_WAITS = 20;
 const TERMINAL_STATUSES = new Set(['won', 'win', 'lost', 'lose', 'loss', 'stand', 'draw', 'tie']);
 
 export interface FastradeExecutorCallbacks {
@@ -49,6 +55,11 @@ export abstract class FastradeBaseExecutor {
   protected alwaysSignalLossState: FastradeAlwaysSignalLossState | null = null;
 
   protected resultTimeoutTimer?: NodeJS.Timeout;
+
+  // 5st (blitz): error terakhir placeTrade + penghitung tunggu saat batas deal
+  // blitz Stockity penuh (transien). Dipakai agar sesi tidak berhenti keras.
+  protected lastPlacementError: string | null = null;
+  protected blitzBusyWaits = 0;
 
   private _sleepTimer?: NodeJS.Timeout;
   private _sleepResolve?: () => void;
@@ -176,6 +187,24 @@ export abstract class FastradeBaseExecutor {
 
     if (!order) {
       if (!this.isRunning) return;
+      // 5st (blitz): batas jumlah/laju deal blitz Stockity — TRANSIEN (hilang saat
+      // deal blitz lama menutup). Jangan hitung sebagai kegagalan keras (yang
+      // mengulang cepat lalu berhenti dgn "cek koneksi/amount"). Tunggu lebih lama
+      // lalu ulang TANPA menaikkan retryCount; MAX_WAITS mencegah loop selamanya.
+      if (this.lastPlacementError === 'blitz_overlimit') {
+        this.blitzBusyWaits++;
+        if (this.blitzBusyWaits > BLITZ_BUSY_MAX_WAITS) {
+          this.logger.error(`[${this.userId}] ${this.modeName}: Batas deal blitz Stockity terus penuh — bot dihentikan`);
+          NotifyService.botBerhenti(this.userId, this.modeName, 'Batas deal blitz Stockity terus penuh');
+          this.callbacks.onStatusChange(`${this.modeName}: batas deal blitz Stockity penuh terus — coba lagi nanti.`);
+          this.stop();
+          return;
+        }
+        this.logger.warn(`[${this.userId}] ${this.modeName}: Slot deal blitz penuh — tunggu ${BLITZ_BUSY_DELAY_MS}ms lalu ulang (${this.blitzBusyWaits}/${BLITZ_BUSY_MAX_WAITS})`);
+        this.callbacks.onStatusChange(`${this.modeName}: menunggu slot deal blitz kosong…`);
+        this.afterDelay(BLITZ_BUSY_DELAY_MS, () => this.executeWithTrend(trend, step, retryCount));
+        return;
+      }
       this.logger.error(
         `[${this.userId}] ${this.modeName}: Placement failed — retry ${retryCount + 1}/${this.MAX_RETRIES} in ${this.RETRY_DELAY_MS}ms`,
       );
@@ -184,6 +213,7 @@ export abstract class FastradeBaseExecutor {
       return;
     }
 
+    this.blitzBusyWaits = 0; // sukses → reset penghitung tunggu blitz
     this.activeOrder = order;
     this.setWaitingResultPhase(execTrend, step);
     this.startResultTimeout(order.id);
@@ -310,6 +340,7 @@ export abstract class FastradeBaseExecutor {
     }
 
     const result = await this.wsClient.placeTrade(tradeData as any);
+    this.lastPlacementError = result.error ?? null;
 
     if (result.error === 'amount_min') {
       this.logger.error(`[${this.userId}] ❌ Amount ${amount} di bawah minimum Stockity — bot dihentikan`);

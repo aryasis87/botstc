@@ -4,7 +4,7 @@ import { TradeOrderData } from './types';
 
 export interface PlaceTradeResult {
   dealId: string | null;
-  error?: 'amount_min' | 'amount_max' | 'amount_invalid' | 'amount_balance' | 'expire_at' | 'duplicate' | 'unknown'
+  error?: 'amount_min' | 'amount_max' | 'amount_invalid' | 'amount_balance' | 'expire_at' | 'duplicate' | 'blitz_overlimit' | 'unknown'
         // Kode diagnostik jalur WebSocket — dipakai untuk melacak kegagalan
         // martingale yang dulu hanya muncul sebagai "unknown".
         | 'ws_timeout' | 'ws_not_open' | 'ws_destroyed';
@@ -241,6 +241,10 @@ export class StockityWebSocketClient {
               // petunjuk untuk pengguna.
               reasons.includes('deal_amount_balance') ? 'amount_balance' :
               reasons.includes('deal_expire_at') ? 'expire_at' :
+              // Batas jumlah/laju deal BLITZ (5st) Stockity. Transien — hilang saat
+              // deal blitz lama menutup. JANGAN diperlakukan seperti kegagalan biasa
+              // (yang mengulang cepat lalu berhenti); pemanggil menunggu lalu ulang.
+              (reasons.includes('overlimit_blitz_deals') || reasons.includes('too_much_active_blitz_deals')) ? 'blitz_overlimit' :
               reasons.includes('duplicate_deal')  ? 'duplicate'  : 'unknown';
             pending.resolve({ dealId: null, error });
             this.pendingTrades.delete(ref);
