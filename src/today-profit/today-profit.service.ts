@@ -77,7 +77,11 @@ export class TodayProfitService {
    * Cache invalidated when day changes or accountType changes.
    */
   private readonly stockityCache = new Map<string, StockityCache>();
-  private readonly STOCKITY_CACHE_TTL_MS = 45_000; // ✅ FIX flicker: naikkan dari 20s ke 45s (> 30s frontend polling)
+  // Frontend kini polling profit tiap 5 DETIK (bukan 30s lagi) + miss sudah fallback
+  // ke live-fetch (bukan kosong→0), jadi TTL bisa jauh lebih pendek → today profit
+  // lebih segar (khususnya mode 5st yang order-nya cepat). Tetap ≫ 5s agar tak
+  // memicu live-fetch di tiap poll.
+  private readonly STOCKITY_CACHE_TTL_MS = 15_000;
 
   /**
    * In-memory per-user-per-day cache for Supabase mode logs.
@@ -86,7 +90,11 @@ export class TodayProfitService {
    * Each day has separate cache key so day changes auto-miss.
    */
   private readonly supabaseTradesCache = new Map<string, SupabaseTradesCache>();
-  private readonly SUPABASE_CACHE_TTL_MS = 8_000; // ✅ FIX flicker: naikkan dari 3s ke 8s (kurangi cache misses)
+  // Trade bot (termasuk 5st) di-log ke mode_logs → INI sumber utama today profit
+  // saat sesi aktif. Diturunkan 8s→4s supaya hasil order 5st (yang selesai tiap
+  // ~6 detik) muncul di today profit jauh lebih cepat. Read mode_logs murah &
+  // konsisten (query seluruh log hari itu, bukan parsial).
+  private readonly SUPABASE_CACHE_TTL_MS = 4_000;
 
   /**
    * In-memory cache for Stockity credentials (sessions/{userId}).
