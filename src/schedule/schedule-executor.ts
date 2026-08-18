@@ -1021,7 +1021,13 @@ export class ScheduleExecutor {
   private buildTradeOrder(trend: TrendType, amount: number, isScheduledOrder: boolean, scheduledTimeMs?: number): TradeOrderData {
     const baseMs          = isScheduledOrder && scheduledTimeMs ? scheduledTimeMs : Date.now();
     const nowFloorSeconds = Math.floor(baseMs / 1000);
-    const createdAtSeconds = isScheduledOrder ? nowFloorSeconds : nowFloorSeconds + 1;
+    // FIX martingale telat ~1 detik: dulu order martingale pakai `+1` detik, jadi
+    // saat hasil kalah tiba di ~:00.3 → created_at jadi :01 → order buka 1 detik
+    // SETELAH boundary. Kini dibulatkan ke detik TERDEKAT: hasil kalah biasanya tiba
+    // ~:00.1-0.4 → dibulatkan ke :00 (boundary tempat order sebelumnya menutup) =
+    // near-instant, dan created_at tak pernah > 0.5 detik di masa lampau (aman
+    // diterima Stockity, seperti order terjadwal). Terjadwal tetap floor (boundary tepat).
+    const createdAtSeconds = isScheduledOrder ? nowFloorSeconds : Math.round(baseMs / 1000);
     const secondsInMinute  = createdAtSeconds % 60;
 
     let finalExpireAt: number;
@@ -1045,8 +1051,8 @@ export class ScheduleExecutor {
       // >= 45s → pakai boundary menit ini (terpendek valid)
       //  < 45s → pakai boundary menit berikutnya
       //
-      // Contoh result di :00 → createdAt :01 → remaining=59s >= 45 → expire di :00 (59s)
-      // Contoh result di :20 → createdAt :21 → remaining=39s  < 45 → expire di :00+60 (99s)
+      // Contoh result di :00 → createdAt :00 → remaining=60s >= 45 → expire di :00 berikutnya (60s)
+      // Contoh result di :20 → createdAt :20 → remaining=40s  < 45 → expire di :00+60 (100s)
       const remainingInMinute = 60 - secondsInMinute;
       finalExpireAt = remainingInMinute >= 45
         ? createdAtSeconds + remainingInMinute        // boundary menit ini
