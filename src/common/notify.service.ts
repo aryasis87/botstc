@@ -19,26 +19,11 @@ export class NotifyService {
   private static readonly terakhir = new Map<string, number>();
   private static readonly COOLDOWN_MS = 5 * 60_000;
 
-  static botBerhenti(userId: string, mode: string, sebab: string): void {
-    const now = Date.now();
-    const kunci = `${userId}|${mode}|${sebab}`;
-    if ((NotifyService.terakhir.get(kunci) ?? 0) > now - NotifyService.COOLDOWN_MS) return;
-    NotifyService.terakhir.set(kunci, now);
-
-    // Jaga Map tak tumbuh tanpa batas.
-    if (NotifyService.terakhir.size > 500) {
-      for (const [k, t] of NotifyService.terakhir) {
-        if (t < now - NotifyService.COOLDOWN_MS) NotifyService.terakhir.delete(k);
-      }
-    }
-
-    const teks =
-      `⛔️ BOT BERHENTI\n\n` +
-      `Mode  : ${mode}\n` +
-      `User  : ${userId}\n` +
-      `Sebab : ${sebab}\n\n` +
-      `🕒 ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })} WIB`;
-    void NotifyService.kirim(teks);
+  // Notif Telegram "⛔️ BOT BERHENTI (Sebab: …)" DINONAKTIFKAN atas permintaan
+  // pemilik (2026-08-18) — dianggap menambah ribet. Dibiarkan sebagai NO-OP agar
+  // ~13 pemanggil tetap kompilasi. Untuk menghidupkan lagi: pulihkan isi lama dari git.
+  static botBerhenti(_userId: string, _mode: string, _sebab: string): void {
+    /* sengaja no-op — tidak mengirim notifikasi apa pun */
   }
 
   /**
