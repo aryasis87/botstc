@@ -101,7 +101,12 @@ export class FttExecutor extends FastradeBaseExecutor {
   private async runCycle(): Promise<void> {
     // ── Candle 1 ──────────────────────────────────────────────────────────
     this.phase = 'WAITING_MINUTE_1';
-    const firstBoundary = this.getNextMinuteBoundary();
+    // 5st (blitz): sinyal dibaca dari 2 candle berjarak 5 DETIK — disamakan dengan
+    // durasi order 5 detik (bukan 60 detik seperti FTT biasa). Sumber harga sama
+    // (endpoint candle /5 Stockity sudah granular ~5 detik).
+    const candleStepMs = this.config.blitz ? 5_000 : 60_000;
+    const nowB = Date.now();
+    const firstBoundary = nowB + (candleStepMs - (nowB % candleStepMs));
     const waitToFirst = firstBoundary - Date.now();
 
     this.logger.log(`[${this.userId}] FTT CYCLE ${this.cycleNumber}: Waiting ${waitToFirst}ms to first boundary`);
@@ -125,7 +130,7 @@ export class FttExecutor extends FastradeBaseExecutor {
     this.phase = 'WAITING_MINUTE_2';
     this.callbacks.onStatusChange(`FTT CYCLE ${this.cycleNumber}: Menunggu menit kedua (Price1=${price1})...`);
 
-    const secondBoundary = firstBoundary + 60_000;
+    const secondBoundary = firstBoundary + candleStepMs;
     const waitToSecond = secondBoundary - Date.now();
 
     await this.sleep(Math.max(0, waitToSecond) + FETCH_OFFSET_MS);
