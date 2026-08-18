@@ -18,6 +18,17 @@ const STEP_STUCK_THRESHOLD_MS = 150000;
 const MIN_PREP_TIME_MS = 5000;      // Reduced from 10s for faster martingale execution
 const MAX_RESULT_WAIT_MS = 120_000; // Reduced from 180s for faster result timeout
 
+// ── Prediksi KALAH di boundary (near-instant martingale) ────────────────────
+// Event `closed` resmi Stockity telat ~1 detik (settlement) → martingale ikut
+// telat. Solusi: hitung sendiri menang/kalah dari harga candle 5-detik tepat di
+// boundary, dan kalau KALAH JELAS, tembak martingale lebih awal (tak menunggu
+// `closed`). FAIL-SAFE: fetch gagal / hasil ragu (dekat seri) → tak berbuat apa,
+// jatuh ke jalur lama (menunggu hasil resmi). Hanya bertindak saat kalah jelas.
+const PREDICT_ENABLED    = true;
+const PREDICT_OFFSET_MS  = 250;   // fire 250ms setelah expiry (candle :00 sudah close & bisa di-fetch)
+const PREDICT_REL_MARGIN = 1e-9;  // ambang "kalah jelas" relatif thd harga; di bawah ini → ragu → tunggu resmi
+const PREDICT_SKIP_TTL_MS = 8000; // buang penanda skip basi bila hasil resmi tak kunjung datang
+
 /**
  * Window fallback matching: identik dengan Kotlin isWebSocketTradeMatch
  *   timeMatch = System.currentTimeMillis() - executionInfo.executionTime < 120000L
@@ -125,6 +136,11 @@ export class ScheduleExecutor {
    */
   private sessionPnL = 0;
 
+  // Prediksi kalah di boundary (lihat konstanta PREDICT_* di atas).
+  private predictOpenRate = new Map<string, number>();          // orderId → harga saat open
+  private predictTimers   = new Map<string, NodeJS.Timeout>();  // orderId → timer boundary
+  private skipResults     = new Map<string, number>();          // orderId → jml hasil resmi yg harus di-skip (sudah dihandle prediksi)
+
   constructor(
     private readonly userId: string,
     private readonly wsClient: StockityWebSocketClient,
@@ -194,6 +210,7 @@ export class ScheduleExecutor {
     this.alwaysSignalLossState = undefined;
     this.executionInfoMap.clear();
     this.executingOrderIds.clear(); // FIX: bersihkan guard agar order bisa di-execute setelah restart
+    this.clearPredictions();
     this.sessionPnL = 0;
     this.callbacks.onOrdersUpdate(this.orders);
     // Notify tracking service
@@ -446,6 +463,8 @@ export class ScheduleExecutor {
       }
       // Notify tracking service
       await this.callbacks.onOrderExecuted?.(order.id, dealId, amount, estimatedCompletionTime).catch(() => {});
+      // Pasang prediksi kalah di boundary → martingale near-instant
+      this.armPrediction(order, tradeData.expireAt);
     } else if (result.error !== 'duplicate') {
       this.logger.error(`[${this.userId}] ❌ Trade failed for ${order.id}`);
       this.executionInfoMap.delete(order.id);
@@ -548,6 +567,11 @@ export class ScheduleExecutor {
       if (this.activeMartingaleOrderId) {
         const mIdx = this.orders.findIndex(o => o.id === this.activeMartingaleOrderId);
         if (mIdx !== -1) {
+          // Prediksi sudah menembak langkah berikutnya → jangan advance dobel dari hasil resmi telat.
+          if (!isWin && !isDraw && this.consumeSkip(this.orders[mIdx].id)) {
+            this.logger.debug(`[${this.userId}] ⏭️ Skip hasil resmi telat (martingale prediksi sudah jalan): ${this.orders[mIdx].time}`);
+            return;
+          }
           this.logger.warn(`[${this.userId}] No order match, applying to active martingale: ${this.orders[mIdx].time}`);
           this.processMartingaleResult(mIdx, isWin, isDraw, dealId);
         }
@@ -561,6 +585,11 @@ export class ScheduleExecutor {
     }
 
     const order = this.orders[orderIdx];
+    // Prediksi sudah menembak langkah berikutnya → hasil resmi kalah yang telat diabaikan.
+    if (!isWin && !isDraw && this.consumeSkip(order.id)) {
+      this.logger.debug(`[${this.userId}] ⏭️ Skip hasil resmi telat (prediksi sudah jalan): ${order.time}`);
+      return;
+    }
     this.executionInfoMap.delete(order.id);
 
     const isAlways  = this.config.martingale.isEnabled && this.config.martingale.isAlwaysSignal;
@@ -732,6 +761,8 @@ export class ScheduleExecutor {
       }
       // Notify tracking service
       await this.callbacks.onMartingaleStep?.(order.id, step, amount, dealId).catch(() => {});
+      // Pasang prediksi kalah di boundary → martingale langkah berikutnya near-instant
+      this.armPrediction(order, tradeData.expireAt);
     } else if (result.error !== 'duplicate') {
       this.executionInfoMap.delete(order.id);
     } else {
@@ -782,6 +813,97 @@ export class ScheduleExecutor {
       },
     };
     this.callbacks.onOrdersUpdate(this.orders);
+  }
+
+  // ── Prediksi kalah di boundary ─────────────────────────────────────────────
+  //
+  // Dipasang tiap kali order (awal/martingale) berhasil ditempatkan. Menyimpan
+  // harga saat open, lalu di boundary expiry menghitung menang/kalah dan — bila
+  // KALAH JELAS — menembak martingale lebih awal (tak menunggu `closed` resmi
+  // yang telat ~1 detik). Semua jalur GAGAL/RAGU → diam (fail-safe ke jalur lama).
+  private armPrediction(order: ScheduledOrder, expireAtSec: number) {
+    if (!PREDICT_ENABLED) return;
+    const m = this.config.martingale;
+    // Hanya untuk martingale reguler (yang menembak langkah berikutnya saat kalah).
+    if (!m.isEnabled || m.isAlwaysSignal || m.maxSteps <= 1) return;
+
+    // Ambil harga saat open (async, tak memblok penempatan order).
+    this.wsClient.fetchLatestClose(this.config.asset.ric)
+      .then(rate => { if (rate != null) this.predictOpenRate.set(order.id, rate); })
+      .catch(() => {});
+
+    const prev = this.predictTimers.get(order.id);
+    if (prev) clearTimeout(prev);
+    const delay = (expireAtSec * 1000 + PREDICT_OFFSET_MS) - Date.now();
+    const t = setTimeout(() => { void this.predictAndAct(order.id); }, Math.max(0, delay));
+    this.predictTimers.set(order.id, t);
+  }
+
+  private async predictAndAct(orderId: string) {
+    this.predictTimers.delete(orderId);
+    if (this.botState !== 'RUNNING') return;
+
+    const idx = this.orders.findIndex(o => o.id === orderId);
+    if (idx === -1) return;
+    let order = this.orders[idx];
+    if (order.isExecuted || order.isSkipped) return; // sudah selesai (mis. hasil resmi lebih dulu)
+
+    const open = this.predictOpenRate.get(orderId);
+    if (open == null) return;                         // tak ada harga open → tunggu resmi
+
+    const close = await this.wsClient.fetchLatestClose(this.config.asset.ric);
+    if (close == null) return;                        // fetch gagal → tunggu resmi
+
+    // KALAH JELAS: call turun / put naik, melewati margin. Di bawah margin (dekat
+    // seri) → ragu → tunggu hasil resmi (jangan pernah salah tembak).
+    const margin = Math.abs(open) * PREDICT_REL_MARGIN;
+    const diff = close - open;
+    const clearLoss =
+      (order.trend === 'call' && diff < -margin) ||
+      (order.trend === 'put'  && diff >  margin);
+    if (!clearLoss) return;
+
+    // Re-cek state (bisa berubah selagi fetch).
+    order = this.orders[idx];
+    if (order.isExecuted || order.isSkipped) return;
+
+    const m = this.config.martingale;
+    const isActive = order.martingaleState.isActive && order.martingaleState.currentStep > 0;
+    const curStep  = isActive ? order.martingaleState.currentStep : 0;
+    if (curStep >= m.maxSteps) return;                // langkah habis → biar official complete LOSE
+
+    // Penanda skip: hasil resmi step ini nanti TAK boleh memicu advance lagi.
+    this.skipResults.set(orderId, (this.skipResults.get(orderId) ?? 0) + 1);
+    setTimeout(() => {
+      const n = (this.skipResults.get(orderId) ?? 0) - 1;
+      if (n > 0) this.skipResults.set(orderId, n); else this.skipResults.delete(orderId);
+    }, PREDICT_SKIP_TTL_MS);
+
+    const nextStep = curStep + 1;
+    this.logger.log(
+      `[${this.userId}] ⚡ Prediksi KALAH di boundary (${order.time} ${order.trend}, ` +
+      `open=${open} close=${close}) → martingale step ${nextStep} lebih awal`,
+    );
+
+    this.predictOpenRate.set(orderId, close); // open langkah berikutnya ≈ close sekarang
+    if (!isActive) { this.activeMartingaleOrderId = orderId; this.martingaleStartTime = Date.now(); }
+    this.updateMartingaleStep(idx, nextStep);
+    await this.placeMartingaleTrade(order, nextStep, this.calcAmount(nextStep));
+  }
+
+  /** Konsumsi 1 penanda skip untuk order; true bila hasil resmi harus di-skip. */
+  private consumeSkip(orderId: string): boolean {
+    const n = this.skipResults.get(orderId) ?? 0;
+    if (n <= 0) return false;
+    if (n - 1 > 0) this.skipResults.set(orderId, n - 1); else this.skipResults.delete(orderId);
+    return true;
+  }
+
+  private clearPredictions() {
+    for (const t of this.predictTimers.values()) clearTimeout(t);
+    this.predictTimers.clear();
+    this.predictOpenRate.clear();
+    this.skipResults.clear();
   }
 
   private advanceAlwaysSignalLoss(order: ScheduledOrder, step: number, lossAmount: number) {

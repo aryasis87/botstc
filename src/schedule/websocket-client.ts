@@ -1,6 +1,7 @@
 ﻿import WebSocket = require('ws');
 import { Logger } from '@nestjs/common';
 import { TradeOrderData } from './types';
+import { curlGet } from '../common/http-utils';
 
 export interface PlaceTradeResult {
   dealId: string | null;
@@ -60,6 +61,45 @@ export class StockityWebSocketClient {
 
   setOnDealResult(cb: (payload: DealResultPayload) => void) { this.onDealResultCb = cb; }
   setOnStatusChange(cb: (connected: boolean, reason?: string) => void) { this.onStatusChangeCb = cb; }
+
+  /**
+   * Harga close candle 5-detik TERAKHIR. Dipakai untuk memprediksi menang/kalah
+   * tepat di boundary (sebelum event `closed` resmi Stockity yang telat ~1 detik
+   * karena settlement). Gagal apa pun → null; pemanggil WAJIB fail-safe (jatuh ke
+   * perilaku lama: menunggu hasil resmi).
+   */
+  async fetchLatestClose(ric: string): Promise<number | null> {
+    try {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const d = new Date();
+      const dateStr =
+        `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` +
+        `T${pad(d.getUTCHours())}:00:00`;
+      const resp = await curlGet(
+        `https://api.stockity1.id/candles/v1/${encodeURIComponent(ric)}/${dateStr}/5`,
+        {
+          'authorization-token': this.authToken,
+          'device-id': this.deviceId,
+          'device-type': this.deviceType,
+          'User-Agent': this.userAgent,
+          'Accept': 'application/json, text/plain, */*',
+          'Origin': 'https://stockity1.id',
+          'Referer': 'https://stockity1.id/',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+        5,
+      );
+      const candles: any[] = resp.data?.data;
+      if (!candles?.length) return null;
+      const last = [...candles]
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+        .at(-1)!;
+      const c = parseFloat(last.close);
+      return Number.isNaN(c) ? null : c;
+    } catch {
+      return null;
+    }
+  }
   private getRef(): number { return this.refCounter++; }
 
   connect(): Promise<void> {
