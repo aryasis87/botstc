@@ -42,6 +42,8 @@ export interface FastradeOrder {
   martingaleStep: number;
   isMartingale: boolean;
   cycleNumber: number;
+  /** Waktu expiry order dalam ms epoch — dipakai prediksi kalah di boundary. */
+  expireAtMs?: number;
 }
 
 export interface FastradeLog {

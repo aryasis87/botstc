@@ -20,6 +20,19 @@ const BLITZ_BUSY_DELAY_MS  = 8_000;
 const BLITZ_BUSY_MAX_WAITS = 20;
 const TERMINAL_STATUSES = new Set(['won', 'win', 'lost', 'lose', 'loss', 'stand', 'draw', 'tie']);
 
+// ── Prediksi KALAH di boundary (martingale near-instant) ────────────────────
+// Event `closed` resmi Stockity telat ~1 detik (settlement) → martingale ikut
+// telat ~1 detik. Solusi: hitung sendiri menang/kalah dari harga candle 5-detik
+// tepat di boundary expiry; bila KALAH JELAS, langsung jalankan jalur kalah
+// (martingale langkah berikutnya) tanpa menunggu `closed`. FAIL-SAFE penuh:
+// fetch gagal / hasil ragu (dekat seri) / order sudah selesai → diam, jatuh ke
+// jalur lama (menunggu hasil resmi). Hanya untuk mode yang re-order SEGERA saat
+// kalah: Fast Reversal & martingale reguler (bukan Always Signal / tanpa martingale).
+const PREDICT_ENABLED     = true;
+const PREDICT_OFFSET_MS   = 250;   // fire 250ms setelah expiry (candle penutup sudah tersedia)
+const PREDICT_REL_MARGIN  = 1e-9;  // ambang "kalah jelas" relatif thd harga; di bawah ini → ragu → tunggu resmi
+const PREDICT_SKIP_TTL_MS = 3_500; // TTL penanda skip (cukup utk menangkap closed telat ~1s, kadaluarsa jauh sebelum order berikutnya)
+
 export interface FastradeExecutorCallbacks {
   onLog: (log: FastradeLog) => void;
   onStatusChange: (status: string) => void;
@@ -55,6 +68,13 @@ export abstract class FastradeBaseExecutor {
   protected alwaysSignalLossState: FastradeAlwaysSignalLossState | null = null;
 
   protected resultTimeoutTimer?: NodeJS.Timeout;
+
+  // ── Prediksi kalah di boundary (lihat konstanta PREDICT_* di atas) ─────────
+  private predictTimer?: NodeJS.Timeout;
+  private predictOrder?: FastradeOrder;
+  private predictOpenRate: number | null = null;
+  // Penanda order yang sudah diprediksi kalah → hasil `closed` resmi telat diabaikan.
+  private predictSkips: { amount: number; trend: TrendType; at: number }[] = [];
 
   // 5st (blitz): error terakhir placeTrade + penghitung tunggu saat batas deal
   // blitz Stockity penuh (transien). Dipakai agar sesi tidak berhenti keras.
@@ -110,6 +130,8 @@ export abstract class FastradeBaseExecutor {
     this.isRunning = false;
     this.stopGeneration++;          // invalidate semua callback yang dijadwalkan
     this.clearResultTimeout();
+    this.clearPrediction();
+    this.predictSkips = [];
     this.wakeUp();
     this.activeOrder = undefined;
     this.executionTime = undefined;
@@ -120,6 +142,11 @@ export abstract class FastradeBaseExecutor {
   }
 
   isActive(): boolean { return this.isRunning; }
+
+  /** Fast Reversal = FTT dengan daftar langkah K yang arahnya dibalik (config-level). */
+  protected get isFastReversalMode(): boolean {
+    return !!this.config.reversalSteps?.length;
+  }
 
   protected abstract startNewCycle(): void;
   protected abstract onWin(order: FastradeOrder): void;
@@ -217,6 +244,7 @@ export abstract class FastradeBaseExecutor {
     this.activeOrder = order;
     this.setWaitingResultPhase(execTrend, step);
     this.startResultTimeout(order.id);
+    this.armPrediction(order); // martingale near-instant: prediksi kalah di boundary
   }
 
   // ── Candle fetching ───────────────────────────────────────────────────────
@@ -407,6 +435,9 @@ export abstract class FastradeBaseExecutor {
 
     const dealId = result.dealId ?? null;
 
+    // expireAt buildInstantTrade: blitz=ms, turbo=detik → normalkan ke ms epoch.
+    const expireAtMs = this.config.blitz ? tradeData.expireAt : tradeData.expireAt * 1000;
+
     const order: FastradeOrder = {
       id: orderId,
       trend,
@@ -416,6 +447,7 @@ export abstract class FastradeBaseExecutor {
       martingaleStep,
       isMartingale: martingaleStep > 0,
       cycleNumber: cycleNum,
+      expireAtMs,
     };
 
     this.callbacks.onLog({
@@ -551,6 +583,12 @@ export abstract class FastradeBaseExecutor {
       return;
     }
 
+    // Prediksi sudah menutup order ini lebih awal → abaikan `closed` resmi yang telat.
+    if (this.consumePredictedSkip(payload)) {
+      this.logger.debug(`[${this.userId}] ⏭️ Skip closed resmi telat (order sudah diprediksi kalah)`);
+      return;
+    }
+
     const active = this.activeOrder;
     if (!active) return;
 
@@ -577,6 +615,16 @@ export abstract class FastradeBaseExecutor {
 
     if (!isMatch) return;
 
+    this.finalizeResult(active, isWin, isDraw, dealId);
+  }
+
+  /**
+   * Proses akhir sebuah hasil trade (dipakai handleDealResult utk hasil resmi,
+   * dan predictAndAct utk hasil KALAH yang diprediksi lebih awal). Menghitung
+   * PnL, mencatat log, memperbarui statistik, cek stop-condition, lalu dispatch
+   * ke onWin/onLose/onDraw.
+   */
+  protected finalizeResult(active: FastradeOrder, isWin: boolean, isDraw: boolean, dealId: string) {
     this.clearResultTimeout();
 
     const result = isWin ? 'WIN' : isDraw ? 'DRAW' : 'LOSE';
@@ -625,6 +673,8 @@ export abstract class FastradeBaseExecutor {
     };
     this.activeOrder = undefined;
     this.executionTime = undefined;
+    // Order ini sudah tuntas → batalkan timer prediksi yang mungkin masih menunggu.
+    if (this.predictOrder?.id === active.id) this.clearPrediction();
 
     if (!this.isRunning) return;
     if (this.checkStopConditions()) return;
@@ -640,6 +690,90 @@ export abstract class FastradeBaseExecutor {
       }
       this.onLose(completedOrder);
     }
+  }
+
+  // ── Prediksi kalah di boundary ─────────────────────────────────────────────
+  //
+  // Dipasang tiap order yang re-order SEGERA saat kalah (Fast Reversal atau
+  // martingale reguler). Simpan harga open, lalu di boundary expiry hitung
+  // menang/kalah; kalau KALAH JELAS jalankan finalizeResult(LOSE) lebih awal
+  // sehingga martingale langkah berikutnya menembak tanpa menunggu `closed`.
+  private armPrediction(order: FastradeOrder) {
+    if (!PREDICT_ENABLED || order.expireAtMs == null) return;
+    const m = this.config.martingale;
+    const armable = this.isFastReversalMode || (m.isEnabled && !m.isAlwaysSignal && m.maxSteps > 0);
+    if (!armable) return;
+
+    this.clearPrediction();
+    this.predictOrder = order;
+    this.predictOpenRate = null;
+
+    // Harga open (async, tak memblok). Single attempt agar cepat.
+    this.fetchCandleClosePrice(1)
+      .then(p => { if (p != null && this.predictOrder?.id === order.id) this.predictOpenRate = p; })
+      .catch(() => {});
+
+    const delay = order.expireAtMs + PREDICT_OFFSET_MS - Date.now();
+    const gen = this.stopGeneration;
+    this.predictTimer = setTimeout(() => {
+      if (this.isRunning && this.stopGeneration === gen) void this.predictAndAct(order);
+    }, Math.max(0, delay));
+  }
+
+  private async predictAndAct(order: FastradeOrder) {
+    this.predictTimer = undefined;
+    if (!this.isRunning) return;
+    // Order harus masih yang ditunggu (belum di-resolve hasil resmi lebih dulu).
+    if (this.activeOrder?.id !== order.id) return;
+
+    const open = this.predictOpenRate;
+    if (open == null) return;                       // tak ada harga open → tunggu resmi
+
+    const close = await this.fetchCandleClosePrice(1);
+    if (close == null) return;                      // fetch gagal → tunggu resmi
+
+    // Re-cek setelah await (hasil resmi bisa tiba selama fetch).
+    if (!this.isRunning || this.activeOrder?.id !== order.id) return;
+
+    // KALAH JELAS: call turun / put naik melewati margin. Di bawah margin (dekat
+    // seri) → ragu → tunggu hasil resmi (jangan pernah salah tembak).
+    const margin = Math.abs(open) * PREDICT_REL_MARGIN;
+    const diff = close - open;
+    const clearLoss =
+      (order.trend === 'call' && diff < -margin) ||
+      (order.trend === 'put'  && diff >  margin);
+    if (!clearLoss) return;
+
+    // Penanda skip: hasil `closed` resmi order ini nanti diabaikan.
+    this.predictSkips.push({ amount: order.amount, trend: order.trend, at: Date.now() });
+    this.predictOrder = undefined;
+
+    this.logger.log(
+      `[${this.userId}] ⚡ Prediksi KALAH di boundary (${order.trend} step=${order.martingaleStep}, ` +
+      `open=${open} close=${close}) → jalankan martingale lebih awal`,
+    );
+    this.finalizeResult(order, false, false, order.dealId ?? '');
+  }
+
+  /** true bila payload cocok dgn order yg sudah diprediksi kalah → hasil resmi di-skip. */
+  private consumePredictedSkip(payload: DealResultPayload): boolean {
+    if (this.predictSkips.length === 0) return false;
+    const now = Date.now();
+    // Buang penanda kadaluarsa.
+    this.predictSkips = this.predictSkips.filter(e => now - e.at <= PREDICT_SKIP_TTL_MS);
+    const idx = this.predictSkips.findIndex(e =>
+      (payload.amount === undefined || payload.amount === e.amount) &&
+      (!payload.trend || payload.trend === e.trend),
+    );
+    if (idx === -1) return false;
+    this.predictSkips.splice(idx, 1);
+    return true;
+  }
+
+  private clearPrediction() {
+    if (this.predictTimer) { clearTimeout(this.predictTimer); this.predictTimer = undefined; }
+    this.predictOrder = undefined;
+    this.predictOpenRate = null;
   }
 
   protected isFallbackMatch(payload: DealResultPayload, order: FastradeOrder): boolean {

@@ -42,6 +42,16 @@ const PROCESSED_IDS_MAX_AGE_MS = 2 * 60 * 60 * 1_000;
 // Fallback WS match window: same 120 s as Kotlin isWebSocketTradeMatch().  FIX #new-2
 const FALLBACK_MATCH_WINDOW_MS = 120_000;
 
+// ── Prediksi KALAH di boundary (martingale near-instant) ────────────────────
+// Event `closed` resmi Stockity telat ~1 detik (settlement) → martingale ikut
+// telat. Di boundary expiry, hitung menang/kalah dari candle 5-detik; bila KALAH
+// JELAS, resolve hasil kalah lebih awal (idempoten via processedOrderIds) agar
+// martingale langkah berikutnya menembak tanpa menunggu `closed`. FAIL-SAFE:
+// fetch gagal / ragu (dekat seri) / order sudah selesai → diam, tunggu resmi.
+const PREDICT_ENABLED    = true;
+const PREDICT_OFFSET_MS  = 250;
+const PREDICT_REL_MARGIN = 1e-9;
+
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 export interface MomentumConfig {
@@ -96,6 +106,9 @@ interface DealContext {
   amount: number;
   trend: string;
   placedAt: number; // ms — for the 120-s fallback window
+  // Prediksi kalah di boundary (lihat konstanta PREDICT_* di atas).
+  openRate?: number | null;
+  predictTimer?: NodeJS.Timeout | null;
 }
 
 interface ActiveModeState {
@@ -308,6 +321,9 @@ export class MomentumService implements OnModuleDestroy {
 
     mode.isRunning = false;
     if (mode.candleFetchInterval) clearInterval(mode.candleFetchInterval);
+    for (const ctx of mode.activeDeals.values()) {
+      if (ctx.predictTimer) clearTimeout(ctx.predictTimer);
+    }
     mode.wsClient.disconnect();
     this.activeModes.delete(userId);
 
@@ -857,9 +873,8 @@ export class MomentumService implements OnModuleDestroy {
       };
       this.appendLog(userId, execLog);
 
-      const tradeResult = await mode.wsClient.placeTrade(
-        this.buildTradePayload(session, config, amount, signal.trend),
-      );
+      const firstPayload = this.buildTradePayload(session, config, amount, signal.trend);
+      const tradeResult = await mode.wsClient.placeTrade(firstPayload);
 
       // FIX #new-3: stop the bot immediately on amount_min (same as ScheduleExecutor)
       // Ketiga galat amount bersifat PERMANEN — mengulang nilai yang sama
@@ -885,6 +900,7 @@ export class MomentumService implements OnModuleDestroy {
           amount, trend: signal.trend,
           placedAt: Date.now(),
         });
+        this.armMomentumPrediction(userId, config, tradeResult.dealId, firstPayload.expireAt * 1000);
       }
 
       // Polling fallback — WS is the primary result path
@@ -1086,6 +1102,7 @@ export class MomentumService implements OnModuleDestroy {
       return;
     }
 
+    if (context.predictTimer) clearTimeout(context.predictTimer);
     mode.activeDeals.delete(matchedId);
 
     await this.resolveOrderResult(
@@ -1125,7 +1142,11 @@ export class MomentumService implements OnModuleDestroy {
 
     // Also clean up any still-live activeDeals entry for this order+step
     for (const [dealId, ctx] of mode.activeDeals) {
-      if (ctx.orderId === orderId && ctx.step === step) { mode.activeDeals.delete(dealId); break; }
+      if (ctx.orderId === orderId && ctx.step === step) {
+        if (ctx.predictTimer) clearTimeout(ctx.predictTimer);
+        mode.activeDeals.delete(dealId);
+        break;
+      }
     }
 
     const statusLower = rawResult.status.toLowerCase();
@@ -1256,9 +1277,8 @@ export class MomentumService implements OnModuleDestroy {
     };
     this.appendLog(userId, martingaleLog);
 
-    const tradeResult = await mode.wsClient.placeTrade(
-      this.buildTradePayload(session, config, martingaleAmount, parentOrder.trend),
-    );
+    const mgPayload = this.buildTradePayload(session, config, martingaleAmount, parentOrder.trend);
+    const tradeResult = await mode.wsClient.placeTrade(mgPayload);
 
     // FIX #new-3: amount_min on martingale step
     // Pada martingale ini paling sering kena: nilainya berlipat tiap langkah.
@@ -1282,9 +1302,71 @@ export class MomentumService implements OnModuleDestroy {
         amount: martingaleAmount, trend: parentOrder.trend,
         placedAt: Date.now(),
       });
+      this.armMomentumPrediction(userId, config, tradeResult.dealId, mgPayload.expireAt * 1000);
     }
 
     this.monitorResult(userId, config, session, parentOrderId, step, momentumType, false);
+  }
+
+  // ── Prediksi kalah di boundary ─────────────────────────────────────────────
+  private armMomentumPrediction(userId: string, config: MomentumConfig, dealId: string, expireAtMs: number) {
+    if (!PREDICT_ENABLED) return;
+    const mode = this.activeModes.get(userId);
+    if (!mode) return;
+    const ctx = mode.activeDeals.get(dealId);
+    if (!ctx) return;
+
+    const m = config.martingale;
+    // Hanya untuk order yang re-order SEGERA saat kalah: martingale reguler, langkah belum habis.
+    if (ctx.isAlwaysSignal || !m.isEnabled || m.maxSteps <= 0 || ctx.step >= m.maxSteps) return;
+
+    ctx.openRate = null;
+    mode.wsClient.fetchLatestClose(config.asset!.ric)
+      .then(p => { const c = mode.activeDeals.get(dealId); if (p != null && c) c.openRate = p; })
+      .catch(() => {});
+
+    const delay = expireAtMs + PREDICT_OFFSET_MS - Date.now();
+    ctx.predictTimer = setTimeout(() => { void this.momentumPredictAndAct(userId, dealId); }, Math.max(0, delay));
+  }
+
+  private async momentumPredictAndAct(userId: string, dealId: string) {
+    const mode = this.activeModes.get(userId);
+    if (!mode || !mode.isRunning) return;
+    const ctx = mode.activeDeals.get(dealId);
+    if (!ctx) return;                               // sudah di-resolve → activeDeals dibersihkan
+    ctx.predictTimer = null;
+
+    const processKey = `${ctx.orderId}_s${ctx.step}`;
+    if (mode.processedOrderIds.has(processKey)) return;
+
+    const open = ctx.openRate;
+    if (open == null) return;                       // tak ada harga open → tunggu resmi
+
+    const config = this.configs.get(userId);
+    if (!config) return;
+
+    const close = await mode.wsClient.fetchLatestClose(config.asset!.ric);
+    if (close == null) return;                      // fetch gagal → tunggu resmi
+
+    // Re-cek setelah await.
+    if (!mode.isRunning || !mode.activeDeals.has(dealId) || mode.processedOrderIds.has(processKey)) return;
+
+    const margin = Math.abs(open) * PREDICT_REL_MARGIN;
+    const diff = close - open;
+    const clearLoss =
+      (ctx.trend === 'call' && diff < -margin) ||
+      (ctx.trend === 'put'  && diff >  margin);
+    if (!clearLoss) return;
+
+    this.logger.log(
+      `[${userId}] ⚡ Momentum prediksi KALAH di boundary (${ctx.momentumType} ${ctx.trend} step=${ctx.step}, ` +
+      `open=${open} close=${close}) → martingale lebih awal`,
+    );
+    // Idempoten via processedOrderIds → `closed` resmi telat nanti diabaikan.
+    await this.resolveOrderResult(
+      userId, config, ctx.orderId, ctx.step, ctx.momentumType, ctx.isAlwaysSignal,
+      { status: 'lost' },
+    );
   }
 
   private calculateMartingaleAmount(config: MomentumConfig, step: number): number {

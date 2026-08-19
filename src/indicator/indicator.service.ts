@@ -27,6 +27,17 @@ const RESULT_TIMEOUT_MS = 90_000;
 const FALLBACK_MATCH_WINDOW_MS = 120_000;
 const TERMINAL_STATUSES = new Set(['won', 'win', 'lost', 'lose', 'loss', 'stand', 'draw', 'tie']);
 
+// ── Prediksi KALAH di boundary (martingale near-instant) ────────────────────
+// Event `closed` resmi Stockity telat ~1 detik (settlement) → martingale ikut
+// telat. Di boundary expiry, hitung menang/kalah dari candle 5-detik; bila KALAH
+// JELAS, jalankan hasil kalah lebih awal agar martingale langkah berikutnya
+// menembak tanpa menunggu `closed`. FAIL-SAFE: fetch gagal / ragu (dekat seri) /
+// order sudah selesai → diam, tunggu hasil resmi. Hanya martingale reguler.
+const PREDICT_ENABLED     = true;
+const PREDICT_OFFSET_MS   = 250;
+const PREDICT_REL_MARGIN  = 1e-9;
+const PREDICT_SKIP_TTL_MS = 3_500;
+
 export interface IndicatorLog {
   id: string;
   orderId: string;
@@ -95,6 +106,12 @@ interface ActiveMode {
   currentMartingaleStep: number;
   isHandlingResult: boolean;
   resultTimeoutTimer: NodeJS.Timeout | null;
+  // Prediksi kalah di boundary (lihat konstanta PREDICT_* di atas).
+  predictTimer?: NodeJS.Timeout | null;
+  predictOpenRate?: number | null;
+  predictOrderId?: string | null;
+  predictStep?: number;
+  predictSkip?: { amount: number; trend: string; at: number } | null;
   monitoringInterval?: NodeJS.Timeout;
   consecutiveWins: number;
   consecutiveLosses: number;
@@ -276,6 +293,8 @@ export class IndicatorService implements OnModuleDestroy {
 
     mode.isActive = false;
     this.clearResultTimeout(mode);
+    this.clearIndicatorPrediction(mode);
+    mode.predictSkip = null;
     if (mode.monitoringInterval) {
       clearInterval(mode.monitoringInterval);
       mode.monitoringInterval = undefined;
@@ -892,9 +911,8 @@ export class IndicatorService implements OnModuleDestroy {
 
     this.logger.log(`[${userId}] Executing trade: ${prediction.recommendedTrend} at ${prediction.targetPrice}`);
 
-    const tradeResult = await mode.wsClient.placeTrade(
-      this.buildTradePayload(session, config, amount, prediction.recommendedTrend),
-    );
+    const firstPayload = this.buildTradePayload(session, config, amount, prediction.recommendedTrend);
+    const tradeResult = await mode.wsClient.placeTrade(firstPayload);
 
     // Guard: bot bisa di-stop saat menunggu konfirmasi placeTrade (~5s).
     if (!mode.isActive) return;
@@ -970,6 +988,7 @@ export class IndicatorService implements OnModuleDestroy {
     });
 
     this.startResultTimeout(userId, orderId, session, config, 0);
+    this.armIndicatorPrediction(userId, mode, config, orderId, prediction.recommendedTrend, 0, firstPayload.expireAt * 1000);
   }
 
   private handleWsDealResult(userId: string, payload: DealResultPayload) {
@@ -979,6 +998,12 @@ export class IndicatorService implements OnModuleDestroy {
     const statusStr = (payload.status || payload.result || '').toLowerCase();
     if (!TERMINAL_STATUSES.has(statusStr)) {
       this.logger.debug(`[${userId}] Skip non-terminal WS event status="${statusStr}"`);
+      return;
+    }
+
+    // Prediksi sudah menutup order ini lebih awal → abaikan `closed` resmi yang telat.
+    if (this.consumeIndicatorSkip(mode, payload)) {
+      this.logger.debug(`[${userId}] ⏭️ Skip closed resmi telat (order sudah diprediksi kalah)`);
       return;
     }
 
@@ -1010,6 +1035,7 @@ export class IndicatorService implements OnModuleDestroy {
 
     mode.isHandlingResult = true;
     this.clearResultTimeout(mode);
+    this.clearIndicatorPrediction(mode);
 
     const isWin  = statusStr === 'won'  || statusStr === 'win';
     const isDraw = statusStr === 'stand' || statusStr === 'draw' || statusStr === 'tie';
@@ -1034,6 +1060,9 @@ export class IndicatorService implements OnModuleDestroy {
   ) {
     const mode = this.activeModes.get(userId);
     if (!mode || !mode.isActive) return;
+
+    // Order ini akan diproses → batalkan timer prediksi yang mungkin masih menunggu.
+    this.clearIndicatorPrediction(mode);
 
     const config = await this.getConfig(userId);
     const session = await this.authService.getSession(userId);
@@ -1187,9 +1216,8 @@ export class IndicatorService implements OnModuleDestroy {
       note: `Martingale step ${step}`,
     });
 
-    const tradeResult = await mode.wsClient.placeTrade(
-      this.buildTradePayload(session, config, martingaleAmount, trend),
-    );
+    const mgPayload = this.buildTradePayload(session, config, martingaleAmount, trend);
+    const tradeResult = await mode.wsClient.placeTrade(mgPayload);
 
     if (!tradeResult?.dealId) {
       this.logger.error(`[${userId}] Martingale trade placement failed: ${tradeResult?.error}`);
@@ -1217,6 +1245,7 @@ export class IndicatorService implements OnModuleDestroy {
     this.logger.log(`[${userId}] Martingale trade placed: step=${step} dealId=${tradeResult.dealId}`);
 
     this.startResultTimeout(userId, mode.activeOrderId!, session, config, step);
+    this.armIndicatorPrediction(userId, mode, config, mode.activeOrderId!, trend, step, mgPayload.expireAt * 1000);
   }
 
   private calculateMartingaleAmount(config: IndicatorConfig, step: number): number {
@@ -1282,6 +1311,88 @@ export class IndicatorService implements OnModuleDestroy {
       clearTimeout(mode.resultTimeoutTimer);
       mode.resultTimeoutTimer = null;
     }
+  }
+
+  // ── Prediksi kalah di boundary ─────────────────────────────────────────────
+  private armIndicatorPrediction(
+    userId: string, mode: ActiveMode, config: IndicatorConfig,
+    orderId: string, trend: string, step: number, expireAtMs: number,
+  ) {
+    if (!PREDICT_ENABLED) return;
+    const m = config.martingale;
+    if (!m.isEnabled || m.isAlwaysSignal || m.maxSteps <= 0) return;
+
+    this.clearIndicatorPrediction(mode);
+    mode.predictOrderId = orderId;
+    mode.predictStep = step;
+    mode.predictOpenRate = null;
+
+    // Harga open (async, single attempt agar cepat & tak memblok).
+    mode.wsClient.fetchLatestClose(config.asset!.ric)
+      .then(p => { if (p != null && mode.predictOrderId === orderId && mode.predictStep === step) mode.predictOpenRate = p; })
+      .catch(() => {});
+
+    const delay = expireAtMs + PREDICT_OFFSET_MS - Date.now();
+    mode.predictTimer = setTimeout(() => {
+      void this.indicatorPredictAndAct(userId, orderId, step);
+    }, Math.max(0, delay));
+  }
+
+  private async indicatorPredictAndAct(userId: string, orderId: string, step: number) {
+    const mode = this.activeModes.get(userId);
+    if (!mode) return;
+    mode.predictTimer = null;
+    if (!mode.isActive || mode.isHandlingResult) return;
+    if (mode.activeOrderId !== orderId || mode.currentMartingaleStep !== step) return;
+
+    const open = mode.predictOpenRate;
+    if (open == null) return;                       // tak ada harga open → tunggu resmi
+
+    const config = this.configs.get(userId);
+    if (!config) return;
+
+    const close = await mode.wsClient.fetchLatestClose(config.asset!.ric);
+    if (close == null) return;                      // fetch gagal → tunggu resmi
+
+    // Re-cek setelah await.
+    if (!mode.isActive || mode.isHandlingResult) return;
+    if (mode.activeOrderId !== orderId || mode.currentMartingaleStep !== step) return;
+
+    const trend = mode.activeOrderTrend;
+    const margin = Math.abs(open) * PREDICT_REL_MARGIN;
+    const diff = close - open;
+    const clearLoss =
+      (trend === 'call' && diff < -margin) ||
+      (trend === 'put'  && diff >  margin);
+    if (!clearLoss) return;
+
+    // Penanda skip: `closed` resmi order ini nanti diabaikan.
+    mode.predictSkip = { amount: mode.activeOrderAmount, trend: trend!, at: Date.now() };
+    mode.predictOrderId = null;
+    mode.isHandlingResult = true;
+    this.clearResultTimeout(mode);
+
+    this.logger.log(
+      `[${userId}] ⚡ Indicator prediksi KALAH di boundary (${trend} step=${step}, ` +
+      `open=${open} close=${close}) → martingale lebih awal`,
+    );
+    await this.processTradeOutcome(userId, false, false, step);
+  }
+
+  private consumeIndicatorSkip(mode: ActiveMode, payload: DealResultPayload): boolean {
+    const ps = mode.predictSkip;
+    if (!ps) return false;
+    if (Date.now() - ps.at > PREDICT_SKIP_TTL_MS) { mode.predictSkip = null; return false; }
+    const amtOk = payload.amount === undefined || payload.amount === ps.amount;
+    const trOk  = !payload.trend || payload.trend === ps.trend;
+    if (amtOk && trOk) { mode.predictSkip = null; return true; }
+    return false;
+  }
+
+  private clearIndicatorPrediction(mode: ActiveMode) {
+    if (mode.predictTimer) { clearTimeout(mode.predictTimer); mode.predictTimer = null; }
+    mode.predictOrderId = null;
+    mode.predictOpenRate = null;
   }
 
   private async fetchTradeResultById(
