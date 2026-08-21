@@ -1075,20 +1075,17 @@ export class AuthService implements OnModuleDestroy {
       .eq('email', email)
       .maybeSingle();
 
-    // v4: alur selfregister membuka akses mode REAL — dengan syarat akun Stockity
-    // masih segar (< 48 jam) bila profil menyertakan created_at, agar akun lama
-    // tidak "numpang" register tanpa melewati afiliasi. Tanpa created_at → grant
-    // (alur register memang membuat akun baru dengan cookie referral).
-    const createdAtMs = profile?.created_at ? Date.parse(String(profile.created_at)) : NaN;
-    const isFreshAccount = Number.isNaN(createdAtMs)
-      ? true
-      : Date.now() - createdAtMs < 48 * 3600 * 1000;
+    // Mode REAL TIDAK lagi diberikan otomatis saat selfregister. Dulu (model v4
+    // afiliasi) akun baru yang segar langsung dapat REAL; program afiliasi sudah
+    // dihentikan dan REAL kini fitur berbayar (aktivasi Rp 150.000 lewat portal
+    // /aktivasi-real → disetujui admin, yang menstempel real_access_at). Jadi
+    // register hanya membuat akun DEMO; jangan sentuh real_access di sini.
 
     // Simpan/upsert whitelist + profil Stockity lengkap (idempoten, best-effort).
     await this.saveWhitelistProfile(profile ?? { email, id: userId }, deviceId, payload?.addedBy ?? 'system', {
       isPrimary:  payload?.isPrimary,
       name:       payload?.name,
-      realAccess: isFreshAccount,
+      realAccess: false,
     });
 
     return { email, userId, isActive: existing?.is_active ?? true, exists: !!existing };
