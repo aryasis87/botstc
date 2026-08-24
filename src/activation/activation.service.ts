@@ -27,12 +27,15 @@ export class ActivationService {
     const brand = app === 'koala' ? 'Koala S Pro' : 'STC AutoTrade';
     const feat = feature === 'aisignal' ? 'aisignal' : feature === 'blitz5s' ? 'blitz5s' : 'real';
 
-    // Simpan jejak pengajuan (best-effort; tak menggagalkan kalau tabel belum ada
-    // atau kolom feature membatasi nilai — notifikasi Telegram tetap terkirim).
+    // Simpan jejak pengajuan + BUKTI GAMBAR (proof_image = data URL penuh, bisa
+    // langsung dirender <img> di webadmin). Best-effort: tak menggagalkan alur
+    // kalau tabel/kolom bermasalah — notifikasi Telegram tetap terkirim.
     try {
-      await this.supabase.client.from('real_activation_requests').insert({
-        app, feature: feat, name, stockity_id: stockityId, status: 'pending', created_at: new Date().toISOString(),
+      const { error: insErr } = await this.supabase.client.from('real_activation_requests').insert({
+        app, feature: feat, name, stockity_id: stockityId, status: 'pending',
+        proof_image: proofDataUrl, created_at: new Date().toISOString(),
       });
+      if (insErr) this.logger.warn(`insert request gagal (abaikan): ${insErr.message}`);
     } catch (e) { this.logger.warn(`insert request gagal (abaikan): ${e}`); }
 
     const caption =
