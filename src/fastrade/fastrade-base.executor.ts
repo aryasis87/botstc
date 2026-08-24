@@ -850,6 +850,10 @@ export abstract class FastradeBaseExecutor {
       // tidak cukup untuk membedakannya. Klien memakai medan ini saat memulihkan
       // keadaan; tanpanya sesi Fast Reversal tampil & diperlakukan sebagai FTT.
       reversalSteps: this.config.reversalSteps ?? [],
+      // 5st (blitz 5 detik) juga berjalan sebagai FTT — tanpa medan ini klien tak
+      // bisa membedakan sesi 5st dari FTT biasa saat memulihkan keadaan di
+      // perangkat baru, sehingga 5st tampil & diperlakukan sebagai FTT.
+      blitz: !!this.config.blitz,
       stopGeneration: this.stopGeneration,
     };
   }
