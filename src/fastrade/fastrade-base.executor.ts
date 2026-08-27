@@ -20,14 +20,15 @@ const BLITZ_BUSY_DELAY_MS  = 8_000;
 const BLITZ_BUSY_MAX_WAITS = 20;
 const TERMINAL_STATUSES = new Set(['won', 'win', 'lost', 'lose', 'loss', 'stand', 'draw', 'tie']);
 
-// ── Prediksi KALAH di boundary (martingale near-instant) ────────────────────
-// Event `closed` resmi Stockity telat ~1 detik (settlement) → martingale ikut
-// telat ~1 detik. Solusi: hitung sendiri menang/kalah dari harga candle 5-detik
-// tepat di boundary expiry; bila KALAH JELAS, langsung jalankan jalur kalah
-// (martingale langkah berikutnya) tanpa menunggu `closed`. FAIL-SAFE penuh:
-// fetch gagal / hasil ragu (dekat seri) / order sudah selesai → diam, jatuh ke
-// jalur lama (menunggu hasil resmi). Hanya untuk mode yang re-order SEGERA saat
-// kalah: Fast Reversal & martingale reguler (bukan Always Signal / tanpa martingale).
+// ── Prediksi MENANG/KALAH di boundary (re-order near-instant) ───────────────
+// Event `closed` resmi Stockity telat ~1 detik (settlement) → re-order berikutnya
+// ikut telat ~1 detik. Solusi: hitung sendiri menang/kalah dari harga candle
+// 5-detik tepat di boundary expiry; bila JELAS, langsung jalankan jalur hasilnya
+// (onWin / onLose) tanpa menunggu `closed`. FAIL-SAFE penuh: fetch gagal / hasil
+// ragu (dekat seri) / order sudah selesai → diam, jatuh ke jalur lama (menunggu
+// hasil resmi). Sisi MENANG berlaku untuk SEMUA mode. Sisi KALAH hanya untuk
+// mode yang re-order SEGERA saat kalah: Fast Reversal & martingale reguler
+// (bukan Always Signal / tanpa martingale) — menjaga perilaku kalah yang lama.
 const PREDICT_ENABLED     = true;
 const PREDICT_OFFSET_MS   = 250;   // fire 250ms setelah expiry (candle penutup sudah tersedia)
 const PREDICT_REL_MARGIN  = 1e-9;  // ambang "kalah jelas" relatif thd harga; di bawah ini → ragu → tunggu resmi
@@ -73,7 +74,10 @@ export abstract class FastradeBaseExecutor {
   private predictTimer?: NodeJS.Timeout;
   private predictOrder?: FastradeOrder;
   private predictOpenRate: number | null = null;
-  // Penanda order yang sudah diprediksi kalah → hasil `closed` resmi telat diabaikan.
+  // Sisi KALAH hanya diprediksi utk mode yang re-order SEGERA saat kalah (Fast
+  // Reversal / martingale reguler). Sisi MENANG diprediksi utk SEMUA mode.
+  private predictLossEligible = false;
+  // Penanda order yang sudah diprediksi (menang/kalah) → hasil `closed` resmi telat diabaikan.
   private predictSkips: { amount: number; trend: TrendType; at: number }[] = [];
 
   // 5st (blitz): error terakhir placeTrade + penghitung tunggu saat batas deal
@@ -701,8 +705,10 @@ export abstract class FastradeBaseExecutor {
   private armPrediction(order: FastradeOrder) {
     if (!PREDICT_ENABLED || order.expireAtMs == null) return;
     const m = this.config.martingale;
-    const armable = this.isFastReversalMode || (m.isEnabled && !m.isAlwaysSignal && m.maxSteps > 0);
-    if (!armable) return;
+    // Sisi KALAH: hanya mode yang re-order SEGERA saat kalah (jaga perilaku lama).
+    this.predictLossEligible = this.isFastReversalMode || (m.isEnabled && !m.isAlwaysSignal && m.maxSteps > 0);
+    // Selalu arm: sisi MENANG diprediksi utk SEMUA mode (menang → onWin re-order
+    // ~boundary, tak lagi menunggu `closed` resmi yang telat ~1 detik).
 
     this.clearPrediction();
     this.predictOrder = order;
@@ -735,24 +741,40 @@ export abstract class FastradeBaseExecutor {
     // Re-cek setelah await (hasil resmi bisa tiba selama fetch).
     if (!this.isRunning || this.activeOrder?.id !== order.id) return;
 
-    // KALAH JELAS: call turun / put naik melewati margin. Di bawah margin (dekat
-    // seri) → ragu → tunggu hasil resmi (jangan pernah salah tembak).
+    // MENANG/KALAH JELAS dari harga candle penutup di boundary. Di bawah margin
+    // (dekat seri) → ragu → tunggu hasil resmi (jangan pernah salah tembak).
     const margin = Math.abs(open) * PREDICT_REL_MARGIN;
     const diff = close - open;
     const clearLoss =
       (order.trend === 'call' && diff < -margin) ||
       (order.trend === 'put'  && diff >  margin);
-    if (!clearLoss) return;
+    const clearWin =
+      (order.trend === 'call' && diff >  margin) ||
+      (order.trend === 'put'  && diff < -margin);
 
-    // Penanda skip: hasil `closed` resmi order ini nanti diabaikan.
-    this.predictSkips.push({ amount: order.amount, trend: order.trend, at: Date.now() });
-    this.predictOrder = undefined;
-
-    this.logger.log(
-      `[${this.userId}] ⚡ Prediksi KALAH di boundary (${order.trend} step=${order.martingaleStep}, ` +
-      `open=${open} close=${close}) → jalankan martingale lebih awal`,
-    );
-    this.finalizeResult(order, false, false, order.dealId ?? '');
+    // Sisi KALAH: hanya utk mode yang re-order segera saat kalah (predictLossEligible).
+    if (clearLoss && this.predictLossEligible) {
+      this.predictSkips.push({ amount: order.amount, trend: order.trend, at: Date.now() });
+      this.predictOrder = undefined;
+      this.logger.log(
+        `[${this.userId}] ⚡ Prediksi KALAH di boundary (${order.trend} step=${order.martingaleStep}, ` +
+        `open=${open} close=${close}) → jalankan jalur kalah lebih awal`,
+      );
+      this.finalizeResult(order, false, false, order.dealId ?? '');
+      return;
+    }
+    // Sisi MENANG: berlaku utk SEMUA mode → onWin re-order tanpa menunggu `closed`.
+    if (clearWin) {
+      this.predictSkips.push({ amount: order.amount, trend: order.trend, at: Date.now() });
+      this.predictOrder = undefined;
+      this.logger.log(
+        `[${this.userId}] ⚡ Prediksi MENANG di boundary (${order.trend} step=${order.martingaleStep}, ` +
+        `open=${open} close=${close}) → jalankan jalur menang lebih awal`,
+      );
+      this.finalizeResult(order, true, false, order.dealId ?? '');
+      return;
+    }
+    // Ragu (dekat seri) → tunggu hasil resmi.
   }
 
   /** true bila payload cocok dgn order yg sudah diprediksi kalah → hasil resmi di-skip. */
@@ -843,6 +865,9 @@ export abstract class FastradeBaseExecutor {
       totalWins: this.totalWins,
       totalLosses: this.totalLosses,
       activeOrderId: this.activeOrder?.id ?? null,
+      // Waktu tutup (epoch ms) order aktif — dipakai klien utk burst hasil INSTAN
+      // (khususnya 5st/blitz 5 detik yg siklusnya pendek). null bila tak ada order.
+      activeOrderExpireAt: this.activeOrder?.expireAtMs ?? null,
       wsConnected: this.wsClient.isConnected(),
       alwaysSignalActive: this.alwaysSignalLossState?.hasOutstandingLoss ?? false,
       alwaysSignalStep: this.alwaysSignalLossState?.currentMartingaleStep ?? 0,
