@@ -17,6 +17,17 @@ export class ActivationService {
 
   constructor(private readonly supabase: SupabaseService) {}
 
+  /** Cek apakah user_id terdaftar di whitelist_users (dipakai portal aktivasi
+   *  untuk validasi live saat mengetik ID). */
+  async checkId(stockityId: string): Promise<{ exists: boolean }> {
+    const id = (stockityId ?? '').trim();
+    if (id.length < 3) return { exists: false };
+    const { data: rows, error } = await this.supabase.client
+      .from('whitelist_users').select('user_id').eq('user_id', id).limit(1);
+    if (error) throw new Error(error.message);
+    return { exists: Array.isArray(rows) && rows.length > 0 };
+  }
+
   async request(app: string, feature: string, name: string, stockityId: string, proofDataUrl: string) {
     if (name.length < 2 || stockityId.length < 3) throw new BadRequestException('Nama / ID Stockity tidak valid');
     const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(proofDataUrl || '');
@@ -24,8 +35,31 @@ export class ActivationService {
     const buf = Buffer.from(m[2], 'base64');
     if (buf.length > 8 * 1024 * 1024) throw new BadRequestException('Bukti terlalu besar');
 
+    // ── ID Stockity WAJIB terdaftar di database (whitelist_users) ──────────────
+    // Tolak lebih awal ID yang tidak ada: jangan simpan pengajuan & jangan ganggu
+    // admin dengan ID asing. Fail-OPEN hanya bila query benar-benar error (infra),
+    // supaya user yang sah tak terblokir karena gangguan sesaat.
+    let idTerdaftar = false;
+    try {
+      const { data: rows, error: findErr } = await this.supabase.client
+        .from('whitelist_users')
+        .select('user_id')
+        .eq('user_id', stockityId)
+        .limit(1);
+      if (findErr) {
+        this.logger.error(`cek user_id gagal (fail-open): ${findErr.message}`);
+        idTerdaftar = true;
+      } else {
+        idTerdaftar = Array.isArray(rows) && rows.length > 0;
+      }
+    } catch (e) {
+      this.logger.error(`cek user_id error (fail-open): ${e}`);
+      idTerdaftar = true;
+    }
+    if (!idTerdaftar) throw new BadRequestException('User ID tidak ditemukan');
+
     const brand = app === 'koala' ? 'Koala S Pro' : 'STC AutoTrade';
-    const feat = feature === 'aisignal' ? 'aisignal' : feature === 'blitz5s' ? 'blitz5s' : 'real';
+    const feat = feature === 'aisignal' ? 'aisignal' : feature === 'blitz5s' ? 'blitz5s' : feature === 'agentalpha' ? 'agentalpha' : 'real';
 
     // Simpan jejak pengajuan + BUKTI GAMBAR (proof_image = data URL penuh, bisa
     // langsung dirender <img> di webadmin). Best-effort: tak menggagalkan alur
@@ -51,6 +85,12 @@ export class ActivationService {
         `🆔 ID Stockity: ${stockityId}\n` +
         `💰 Rp 85.000 / bulan (QRIS)\n\n` +
         `➡️ Setujui: aktifkan 5st untuk ID ${stockityId} di panel Super Admin (Aktivasi 5st).`
+      : feat === 'agentalpha'
+      ? `🟣 PENGAJUAN AKTIVASI AGENT ALPHA — ${brand}\n\n` +
+        `👤 Nama: ${name}\n` +
+        `🆔 ID Stockity: ${stockityId}\n` +
+        `💰 Rp 850.000 (QRIS)\n\n` +
+        `➡️ Setujui: aktifkan Agent Alpha untuk ID ${stockityId} di panel Super Admin (Aktivasi Agent Alpha).`
       : `🟢 PENGAJUAN AKTIVASI REAL — ${brand}\n\n` +
         `👤 Nama: ${name}\n` +
         `🆔 ID Stockity: ${stockityId}\n` +

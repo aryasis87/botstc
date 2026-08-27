@@ -12,6 +12,7 @@ import { ScheduleModule as ScheduleAppModule } from './schedule/schedule.module'
 import { FastradeModule } from './fastrade/fastrade.module';
 import { IndicatorModule } from './indicator/indicator.module';
 import { MomentumModule } from './momentum/momentum.module';
+import { AgentAlphaModule } from './agentalpha/agentalpha.module';
 import { AISignalModule } from './aisignal/aisignal.module';
 import { TodayProfitModule } from './today-profit/today-profit.module';
 import { AdminModule } from './admin/admin.module';
@@ -36,6 +37,7 @@ import { SafetyModule } from './common/safety.module';
     FastradeModule,
     IndicatorModule,
     MomentumModule,
+    AgentAlphaModule,
     AISignalModule,
     TodayProfitModule,
     AdminModule,
