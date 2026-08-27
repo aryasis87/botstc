@@ -11,19 +11,25 @@ import { SupabaseService } from '../supabase/supabase.service';
 // pembayaran dilakukan terpisah oleh admin (bukti tetap tersimpan di tabel).
 //
 // Grant per fitur (di DB backend ini sendiri — STC atau KOALA):
-//   real       → whitelist_users.real_access = true (+ real_access_at)
+//   real       → whitelist_users.real_access = true (+ real_access_at); OTOMATIS
+//                dicabut 30 hari kemudian oleh sweepRealExpiry (grant baru saja).
 //   aisignal   → app_config 'aisignal_access'   map { user_id: expiresAt } (+30 hari)
 //   blitz5s    → app_config 'blitz5s_access'     map { user_id: expiresAt } (+30 hari)
-//   agentalpha → app_config 'agentalpha_access'  map { user_id: expiresAt } (seumur hidup)
+//   agentalpha → app_config 'agentalpha_access'  map { user_id: expiresAt } (+30 hari)
 //
 // Format MAP { id: expiresAt } dipakai sesuai pembaca app + guard backend.
+// SEMUA fitur kini langganan 30 hari (bukan seumur hidup).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DAY_MS      = 24 * 60 * 60 * 1000;
 const DELAY_MS    = 10 * 60 * 1000;    // aktif 10 menit setelah submit
 const MAX_AGE_MS  = 24 * 60 * 60 * 1000; // abaikan pengajuan >24 jam (jangan retro-aktivasi backlog lama)
 const SWEEP_MS    = 60 * 1000;         // periksa tiap 1 menit
-const LIFETIME_MS = 50 * 365 * DAY_MS; // "seumur hidup" utk agentalpha
+const DURATION_MS = 30 * DAY_MS;       // durasi aktivasi semua fitur = 30 hari
+const LIFETIME_MS = 50 * 365 * DAY_MS; // hanya utk pertahankan entri array legacy di toMap()
+// REAL berbentuk kolom boolean (bukan map) → 30-hari via sweep cabut. Hanya
+// berlaku utk grant SEJAK kebijakan ini (lindungi user lama yg granted permanen).
+const REAL_POLICY_START_MS = Date.parse('2026-08-28T00:00:00Z');
 
 const FEATURE_LABEL: Record<string, string> = {
   real: 'REAL', aisignal: 'AI Signal', blitz5s: '5st', agentalpha: 'Agent Alpha',
@@ -33,6 +39,7 @@ const FEATURE_LABEL: Record<string, string> = {
 export class ActivationAutoService {
   private readonly logger = new Logger('ActivationAutoService');
   private sweeping = false;
+  private revoking = false;
   private readonly token = (process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
   private readonly chatIds = (process.env.SUPER_ADMIN_CHAT_IDS ?? '')
     .split(',').map((s) => s.trim()).filter(Boolean);
@@ -83,6 +90,35 @@ export class ActivationAutoService {
     }
   }
 
+  // REAL = kolom boolean (tak punya expiry sendiri) → cabut otomatis 30 hari
+  // setelah di-grant. HANYA grant SEJAK REAL_POLICY_START_MS (lindungi user lama
+  // yang dulu di-grant permanen). Baris real_access_at NULL diabaikan (grandfather).
+  @Interval(SWEEP_MS)
+  async sweepRealExpiry(): Promise<void> {
+    if (this.revoking) return;
+    this.revoking = true;
+    try {
+      const db = this.supabase.client;
+      const now = Date.now();
+      if (now - REAL_POLICY_START_MS < DURATION_MS) return; // belum ada yg bisa kedaluwarsa
+      const startIso   = new Date(REAL_POLICY_START_MS).toISOString();
+      const expiredIso = new Date(now - DURATION_MS).toISOString();
+      const { data, error } = await db.from('whitelist_users')
+        .update({ real_access: false })
+        .eq('real_access', true)
+        .gte('real_access_at', startIso)   // grant sejak kebijakan
+        .lt('real_access_at', expiredIso)  // sudah lewat 30 hari
+        .select('user_id');
+      if (error) { this.logger.warn(`sweep REAL expiry gagal: ${error.message}`); return; }
+      const n = data?.length ?? 0;
+      if (n > 0) this.logger.log(`[AUTO] Cabut REAL kedaluwarsa (30 hari): ${n} user`);
+    } catch (e: any) {
+      this.logger.warn(`sweep REAL expiry error: ${e?.message ?? e}`);
+    } finally {
+      this.revoking = false;
+    }
+  }
+
   private async mark(id: any, status: 'paid' | 'unpaid'): Promise<void> {
     try {
       await this.supabase.client.from('real_activation_requests').update({ status }).eq('id', id);
@@ -107,10 +143,9 @@ export class ActivationAutoService {
         feature === 'agentalpha' ? 'agentalpha_access' : null;
       if (!key) { this.logger.warn(`grant: fitur tak dikenal "${feature}"`); return false; }
 
-      const dur = feature === 'agentalpha' ? LIFETIME_MS : 30 * DAY_MS;
       const { data } = await db.from('app_config').select('value').eq('key', key).maybeSingle();
       const map = this.toMap(data?.value);
-      map[uid] = Date.now() + dur;                 // aktivasi ulang = perpanjang
+      map[uid] = Date.now() + DURATION_MS;         // 30 hari; aktivasi ulang = perpanjang
       const { error } = await db.from('app_config').upsert(
         { key, value: JSON.stringify(map), updated_at: new Date().toISOString() },
         { onConflict: 'key' },
