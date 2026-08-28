@@ -260,7 +260,7 @@ export abstract class FastradeBaseExecutor {
    * Sekarang: 3 attempt dengan 1s jeda per retry.
    * HTTP error transient (timeout jaringan, server busy) tidak lagi membuang sinyal.
    */
-  protected async fetchCandleClosePrice(maxAttempts = 3): Promise<number | null> {
+  protected async fetchCandleClosePrice(maxAttempts = 3, delayMs = 1_000): Promise<number | null> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (!this.isRunning) return null;
 
@@ -269,14 +269,21 @@ export abstract class FastradeBaseExecutor {
 
       if (attempt < maxAttempts) {
         this.logger.warn(
-          `[${this.userId}] Candle fetch attempt ${attempt}/${maxAttempts} failed — retry in 1s`,
+          `[${this.userId}] Candle fetch attempt ${attempt}/${maxAttempts} failed — retry in ${delayMs}ms`,
         );
-        await new Promise<void>(r => setTimeout(r, 1_000));
+        await new Promise<void>(r => setTimeout(r, delayMs));
       }
     }
 
     this.logger.error(`[${this.userId}] Candle fetch failed after ${maxAttempts} attempts`);
     return null;
+  }
+
+  // Ambil harga candle CEPAT untuk prediksi boundary: beberapa percobaan dgn
+  // jeda pendek (~130ms) — menembus kegagalan transien / candle penutup yang
+  // telat terbit, TANPA menunggu 1 detik (yang justru menghapus manfaat prediksi).
+  protected fetchCandleClosePriceFast(): Promise<number | null> {
+    return this.fetchCandleClosePrice(4, 130);
   }
 
   private async _fetchCandleOnce(): Promise<number | null> {
@@ -714,8 +721,8 @@ export abstract class FastradeBaseExecutor {
     this.predictOrder = order;
     this.predictOpenRate = null;
 
-    // Harga open (async, tak memblok). Single attempt agar cepat.
-    this.fetchCandleClosePrice(1)
+    // Harga open (async, tak memblok). Fast-retry supaya tak gampang null.
+    this.fetchCandleClosePriceFast()
       .then(p => { if (p != null && this.predictOrder?.id === order.id) this.predictOpenRate = p; })
       .catch(() => {});
 
@@ -735,7 +742,7 @@ export abstract class FastradeBaseExecutor {
     const open = this.predictOpenRate;
     if (open == null) return;                       // tak ada harga open → tunggu resmi
 
-    const close = await this.fetchCandleClosePrice(1);
+    const close = await this.fetchCandleClosePriceFast();
     if (close == null) return;                      // fetch gagal → tunggu resmi
 
     // Re-cek setelah await (hasil resmi bisa tiba selama fetch).

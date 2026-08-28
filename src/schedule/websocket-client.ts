@@ -68,7 +68,20 @@ export class StockityWebSocketClient {
    * karena settlement). Gagal apa pun → null; pemanggil WAJIB fail-safe (jatuh ke
    * perilaku lama: menunggu hasil resmi).
    */
-  async fetchLatestClose(ric: string): Promise<number | null> {
+  // Harga candle 5-detik terakhir. FAST-RETRY (beberapa percobaan, jeda pendek)
+  // supaya prediksi boundary tak gampang null krn kegagalan transien / candle
+  // penutup yang telat terbit — TANPA menunggu ~1 detik. Dipakai indicator,
+  // momentum, dan schedule (semua utk prediksi menang/kalah di boundary).
+  async fetchLatestClose(ric: string, attempts = 4, delayMs = 130): Promise<number | null> {
+    for (let i = 1; i <= attempts; i++) {
+      const c = await this._fetchLatestCloseOnce(ric);
+      if (c !== null) return c;
+      if (i < attempts) await new Promise<void>((r) => setTimeout(r, delayMs));
+    }
+    return null;
+  }
+
+  private async _fetchLatestCloseOnce(ric: string): Promise<number | null> {
     try {
       const pad = (n: number) => String(n).padStart(2, '0');
       const d = new Date();
