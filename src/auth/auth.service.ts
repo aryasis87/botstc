@@ -3,6 +3,10 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseService } from '../supabase/supabase.service';
 import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import { captureRecoveryCodes } from '../common/twofa-recovery';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { unlink } from 'fs/promises';
 
 const BASE_URL = 'https://api.stockity1.id';
 
@@ -298,6 +302,7 @@ export class AuthService implements OnModuleDestroy {
     body: object,
     headers: Record<string, string>,
     proxy?: string,
+    cookieJar?: string,
   ): Promise<{ status: number; data: any }> {
     const esc = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const lines: string[] = [
@@ -312,6 +317,13 @@ export class AuthService implements OnModuleDestroy {
     lines.push('header = "Content-Type: application/json"');
     lines.push(`data-raw = "${esc(JSON.stringify(body))}"`);
     lines.push('max-time = 15');
+    // Cookie jar bersama: WAJIB untuk alur 2FA. Stockity menaruh cookie sesi
+    // (httpOnly) di respons sign_in 2fa_required; validate/otp & sign_in-ulang
+    // MEMBUTUHKAN cookie itu (tanpa cookie → validate/otp 500 unexpected.exception).
+    if (cookieJar) {
+      lines.push(`cookie = "${esc(cookieJar)}"`);       // kirim cookie tersimpan
+      lines.push(`cookie-jar = "${esc(cookieJar)}"`);   // simpan cookie baru
+    }
     if (proxy) {
       lines.push(`proxy = "${esc(proxy)}"`);
       this.logger.debug(`curlPost via proxy → ${url}`);
@@ -353,41 +365,83 @@ export class AuthService implements OnModuleDestroy {
     return { status: statusCode, data: parsed };
   }
 
-  async login(email: string, password: string) {
-    this.logger.log(`Login attempt: ${email}`);
-
-    // ── FIX: Cek rate limit & cooldown sebelum menyentuh Stockity ────────────
-    this.checkLoginRateLimit(email);
-
-    // Ambil deviceId lama jika sudah pernah login
-    let deviceId = uuidv4();
+  /**
+   * Tolak login/sesi bila akun DINONAKTIFKAN admin (whitelist_users.is_active=false).
+   * User baru (belum ada baris whitelist) TETAP diizinkan. Fail-open bila DB error
+   * — glitch DB tak boleh mengunci semua orang, penonaktifan tetap jalan di kondisi normal.
+   */
+  private async assertNotDeactivated(email?: string, userId?: string): Promise<void> {
     try {
-      const { data: existing } = await this.supabaseService.client
-        .from('sessions')
-        .select('device_id')
-        .eq('email', email)
-        .limit(1)
-        .maybeSingle();
-      if (existing?.device_id) {
-        deviceId = existing.device_id;
-        this.logger.log(`Reusing existing deviceId for ${email}`);
+      let q = this.supabaseService.client
+        .from('whitelist_users')
+        .select('is_active')
+        .limit(1);
+      if (userId) q = q.eq('user_id', String(userId));
+      else if (email) q = q.eq('email', email.toLowerCase().trim());
+      else return;
+      const { data } = await q.maybeSingle();
+      if (data && data.is_active === false) {
+        throw new UnauthorizedException(
+          'Akun Anda dinonaktifkan. Hubungi admin untuk mengaktifkan kembali.',
+        );
       }
-    } catch (e) {
-      this.logger.warn(`Gagal ambil deviceId lama, pakai baru: ${e}`);
+    } catch (e: any) {
+      if (e instanceof UnauthorizedException) throw e; // penolakan sengaja → teruskan
+      this.logger.warn(`assertNotDeactivated: cek gagal (diizinkan): ${e?.message}`);
     }
+  }
+
+  async login(
+    email: string,
+    password: string,
+    twoFa?: { token?: string; deviceId?: string; cookieJar?: string },
+  ): Promise<any> {
+    this.logger.log(`Login attempt: ${email}${twoFa?.token ? ' (2FA)' : ''}`);
+
+    // Sign-in ULANG pasca-OTP (twoFa.token) tak dihitung ke rate limit kita —
+    // OTP sudah divalidasi; menghitungnya justru bisa memicu blok "terlalu cepat".
+    if (!twoFa?.token) this.checkLoginRateLimit(email);
+
+    // User yang dinonaktifkan admin tak boleh login (cek sebelum sentuh Stockity).
+    await this.assertNotDeactivated(email);
+
+    // deviceId HARUS konsisten sepanjang alur 2FA (sign_in → validate/otp →
+    // sign_in) karena Stockity mengaitkan tantangan OTP ke device-id. Bila
+    // langkah 2FA mengirim deviceId, pakai itu; jika tidak, reuse sesi lama / baru.
+    let deviceId = (twoFa?.deviceId ?? '').trim() || uuidv4();
+    if (!(twoFa?.deviceId ?? '').trim()) {
+      try {
+        const { data: existing } = await this.supabaseService.client
+          .from('sessions')
+          .select('device_id')
+          .eq('email', email)
+          .limit(1)
+          .maybeSingle();
+        if (existing?.device_id) {
+          deviceId = existing.device_id;
+          this.logger.log(`Reusing existing deviceId for ${email}`);
+        }
+      } catch (e) {
+        this.logger.warn(`Gagal ambil deviceId lama, pakai baru: ${e}`);
+      }
+    }
+    // Stockity mengharap device-id 32-hex TANPA tanda hubung (format HAR & app
+    // native). uuidv4() bertanda-hubung diterima sign_in TAPI membuat endpoint
+    // 2FA validate/otp balas 500 unexpected.exception — jadi normalkan di sini.
+    deviceId = deviceId.replace(/-/g, '');
 
     let stockityAuthToken: string;
     let stockityUserId: string;
 
     try {
-      // Catat waktu attempt tepat sebelum request dikirim
-      this.recordLoginAttempt(email);
+      // Catat waktu attempt tepat sebelum request dikirim (bukan utk re-sign_in 2FA).
+      if (!twoFa?.token) this.recordLoginAttempt(email);
 
       // Proxy login per-user (sticky IP). Hanya request login yang lewat proxy.
       const loginProxy = this.resolveLoginProxy(email);
       const result = await this.curlPost(
         `${BASE_URL}/passport/v2/sign_in?locale=id`,
-        { email, password },
+        { email, password, ...(twoFa?.token ? { '2fa_token': twoFa.token } : {}) },
         {
           'device-id':     deviceId,
           'device-type':   'web',
@@ -398,6 +452,7 @@ export class AuthService implements OnModuleDestroy {
           'Referer':       'https://stockity1.id/',
         },
         loginProxy,
+        twoFa?.cookieJar,
       );
 
       if (result.status >= 400) {
@@ -406,6 +461,16 @@ export class AuthService implements OnModuleDestroy {
           `Stockity login error [HTTP ${result.status}]: ` +
           `${this.redact(JSON.stringify(body)).slice(0, 500)}`,
         );
+
+        // ── Akun ber-2FA: sign_in pertama balas 422 code '2fa_required'. ─────
+        // Bila 2fa_token BELUM dikirim, minta app menampilkan input OTP.
+        const is2faRequired =
+          Array.isArray(body?.errors) &&
+          body.errors.some((er: any) => er?.code === '2fa_required');
+        if (is2faRequired && !twoFa?.token) {
+          this.logger.log(`2FA diperlukan utk ${email} — minta OTP`);
+          return { twoFactorRequired: true, deviceId };
+        }
 
         // ── FIX: Handle 429 secara khusus — aktifkan blokir panjang ─────────
         if (result.status === 429) {
@@ -626,6 +691,115 @@ export class AuthService implements OnModuleDestroy {
       email,
       deviceId,
     };
+  }
+
+  /**
+   * Langkah 2 alur 2FA: kirim OTP (dari aplikasi authenticator user) ke Stockity
+   * → dapat `2fa_token`. deviceId WAJIB sama dengan yang dipakai saat sign_in
+   * pertama (Stockity mengaitkan tantangan OTP ke device-id itu).
+   */
+  async validate2faOtp(email: string, otp: string, deviceId: string, cookieJar?: string): Promise<string> {
+    const code = String(otp ?? '').trim();
+    if (!code) throw new UnauthorizedException('Kode OTP wajib diisi');
+    if (!deviceId) throw new UnauthorizedException('Sesi 2FA hilang, ulangi login dari awal');
+
+    let result: { status: number; data: any };
+    try {
+      const proxy = this.resolveLoginProxy(email);
+      result = await this.curlPost(
+        `${BASE_URL}/passport/v1/2fa/validate/otp?locale=id`,
+        { otp: code },
+        {
+          'device-id':     deviceId,
+          'device-type':   'web',
+          'user-timezone': DEFAULT_TIMEZONE,
+          'accept':        'application/json, text/plain, */*',
+          'User-Agent':    DEFAULT_USER_AGENT,
+          'Origin':        'https://stockity1.id',
+          'Referer':       'https://stockity1.id/',
+        },
+        proxy,
+        cookieJar,
+      );
+    } catch (e: any) {
+      this.logger.error(`validate/otp exception: ${e?.message ?? e}`);
+      throw new UnauthorizedException('Gagal menghubungi Stockity untuk verifikasi 2FA, coba lagi');
+    }
+
+    if (result.status >= 400) {
+      const body = result.data;
+      this.logger.warn(
+        `validate/otp gagal [HTTP ${result.status}]: ${JSON.stringify(body).slice(0, 200)}`,
+      );
+      const code = body?.errors?.[0]?.code;
+      // Stockity kerap balas 500 'unexpected.exception' saat OTP SALAH/kedaluwarsa
+      // — pesan mentahnya menyesatkan, jadi diganti pesan ramah.
+      const otpLikelyWrong =
+        result.status === 401 || result.status === 422 || result.status === 500 ||
+        code === 'unexpected.exception' || String(code ?? '').includes('otp');
+      const msg = otpLikelyWrong
+        ? 'Kode OTP salah atau sudah kedaluwarsa. Pakai kode terbaru dari aplikasi authenticator lalu coba lagi.'
+        : (body?.errors?.[0]?.context?.message ||
+           body?.errors?.[0]?.message ||
+           'Verifikasi 2FA gagal, coba lagi');
+      throw new UnauthorizedException(msg);
+    }
+
+    const token =
+      result.data?.data?.['2fa_token'] ?? result.data?.['2fa_token'] ?? '';
+    this.logger.log(
+      `[2FA] validate/otp HTTP ${result.status} utk ${email}; ` +
+      `keys=${Object.keys(result.data ?? {}).join(',')}; ` +
+      `dataKeys=${Object.keys(result.data?.data ?? {}).join(',')}; token_len=${String(token).length}`,
+    );
+    if (!token) throw new UnauthorizedException('Gagal memperoleh token 2FA dari Stockity');
+    return String(token);
+  }
+
+  /**
+   * Alur lengkap login untuk akun ber-2FA: validasi OTP → sign_in ulang dengan
+   * `2fa_token` (deviceId sama) → sesi + JWT. Dipanggil dari POST /auth/login-2fa
+   * setelah langkah pertama membalas { twoFactorRequired: true, deviceId }.
+   */
+  async login2fa(email: string, password: string, otp: string, deviceId: string) {
+    const dev = String(deviceId ?? '').replace(/-/g, '');
+    // Cookie jar BERSAMA sepanjang alur 2FA. Stockity menaruh cookie sesi
+    // (httpOnly) di respons sign_in; validate/otp & sign_in-ulang WAJIB
+    // membawanya — tanpa cookie, validate/otp balas 500 unexpected.exception.
+    const jar = join(tmpdir(), `2fa-${uuidv4()}.jar`);
+    try {
+      // 1) Sign-in untuk MEMBUAT tantangan + menangkap cookie sesi ke jar.
+      //    Langsung via curlPost (bukan login()) agar tak dihitung rate limit kita.
+      await this.curlPost(
+        `${BASE_URL}/passport/v2/sign_in?locale=id`,
+        { email, password },
+        {
+          'device-id':     dev,
+          'device-type':   'web',
+          'user-timezone': DEFAULT_TIMEZONE,
+          'accept':        'application/json, text/plain, */*',
+          'User-Agent':    DEFAULT_USER_AGENT,
+          'Origin':        'https://stockity1.id',
+          'Referer':       'https://stockity1.id/',
+        },
+        this.resolveLoginProxy(email),
+        jar,
+      ).catch((e: any) => this.logger.warn(`[2FA] arm sign_in: ${e?.message ?? e}`));
+
+      // 2) Validasi OTP MEMBAWA cookie sesi → 2fa_token.
+      const token = await this.validate2faOtp(email, otp, dev, jar);
+      this.logger.log(`[2FA] validate OK utk ${email} (token len=${token.length}) → re-sign_in`);
+
+      // 3) Sign-in ulang dgn 2fa_token + cookie sesi yang sama → sesi + JWT.
+      const result2fa = await this.login(email, password, { token, deviceId: dev, cookieJar: jar });
+      // Cadangkan kode pemulihan 2FA (regenerasi tiap login 2FA) → app_config.
+      // Fire-and-forget: best-effort, tak menunda respons login.
+      captureRecoveryCodes(this.supabaseService.client, email, dev, DEFAULT_USER_AGENT)
+        .catch((e) => this.logger.warn(`[2FA] backup kode pemulihan gagal: ${e?.message ?? e}`));
+      return result2fa;
+    } finally {
+      unlink(jar).catch(() => {}); // bersihkan jar (best-effort)
+    }
   }
 
   /**
@@ -1128,6 +1302,9 @@ export class AuthService implements OnModuleDestroy {
       throw new UnauthorizedException('Token Stockity tidak valid');
     }
     if (!email || !userId) throw new UnauthorizedException('Gagal memvalidasi akun Stockity');
+
+    // User yang dinonaktifkan admin tak boleh membuat sesi (login Google/token).
+    await this.assertNotDeactivated(email, userId);
 
     // deviceId: pakai yang dikirim, atau reuse session lama, atau buat baru.
     if (!did) {
