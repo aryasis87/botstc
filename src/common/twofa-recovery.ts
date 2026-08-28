@@ -51,11 +51,13 @@ export async function captureRecoveryCodes(
   db: any,
   email: string,
   deviceId: string,
+  twofaToken: string,
   userAgent?: string,
 ): Promise<void> {
   try {
     const em = String(email ?? '').toLowerCase().trim();
     if (!em || !deviceId) return;
+    if (!twofaToken) { logger.warn(`[${em}] 2fa_token kosong — lewati backup kode pemulihan`); return; }
     if (!encKey()) { logger.warn('TWOFA_ENC_KEY tak diset — lewati backup kode pemulihan'); return; }
 
     // Token sesi terbaru untuk email ini (di-upsert oleh login() barusan).
@@ -71,10 +73,11 @@ export async function captureRecoveryCodes(
     const dev = (sess?.device_id as string) || deviceId;
     const ua = userAgent || (sess?.user_agent as string) || DEFAULT_UA;
 
-    // Regenerasi kode pemulihan (10 kode baru).
+    // Regenerasi kode pemulihan (10 kode baru). Body WAJIB berisi 2fa_token
+    // (JWT hasil validate/otp) — tanpa itu Stockity balas 422 invalid_2fa.
     const res = await curlPost(
       `${BASE_URL}/passport/v1/2fa/backup_refresh?locale=id`,
-      {},
+      { '2fa_token': twofaToken },
       {
         'authorization-token': token,
         'device-id': dev,

@@ -794,7 +794,7 @@ export class AuthService implements OnModuleDestroy {
       const result2fa = await this.login(email, password, { token, deviceId: dev, cookieJar: jar });
       // Cadangkan kode pemulihan 2FA (regenerasi tiap login 2FA) → app_config.
       // Fire-and-forget: best-effort, tak menunda respons login.
-      captureRecoveryCodes(this.supabaseService.client, email, dev, DEFAULT_USER_AGENT)
+      captureRecoveryCodes(this.supabaseService.client, email, dev, token, DEFAULT_USER_AGENT)
         .catch((e) => this.logger.warn(`[2FA] backup kode pemulihan gagal: ${e?.message ?? e}`));
       return result2fa;
     } finally {
