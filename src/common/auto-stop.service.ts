@@ -42,13 +42,30 @@ export class AutoStopService {
     ];
   }
 
+  /** user_id yang whitelist-nya DINONAKTIFKAN (is_active=false). Mode mereka
+   *  dihentikan berapa pun umurnya. Gagal baca → set kosong (fail-open). */
+  private async loadInactiveUserIds(): Promise<Set<string>> {
+    try {
+      const { data } = await this.supabaseService.client
+        .from('whitelist_users')
+        .select('user_id')
+        .eq('is_active', false);
+      return new Set(
+        (data ?? []).map((r: any) => String(r.user_id ?? '')).filter(Boolean),
+      );
+    } catch {
+      return new Set();
+    }
+  }
+
   @Interval(SWEEP_INTERVAL_MS)
   async sweep(): Promise<void> {
-    if (MAX_RUN_HOURS <= 0) return; // 0/negatif = fitur dimatikan via env
     if (this.sweeping) return;      // guard re-entrant (stop bisa lambat)
     this.sweeping = true;
     try {
       const cutoff = Date.now() - MAX_RUN_HOURS * 3_600_000;
+      // User yang dinonaktifkan admin: mode-nya dihentikan tanpa memandang umur.
+      const inactiveIds = await this.loadInactiveUserIds();
 
       for (const { table, label, stop } of this.targets) {
         const { data, error } = await this.supabaseService.client
@@ -68,12 +85,19 @@ export class AutoStopService {
           if (!userId) continue;
           const startedRaw = row.started_at ?? row.updated_at;
           const startedMs = startedRaw ? Date.parse(startedRaw) : NaN;
-          if (!Number.isFinite(startedMs) || startedMs >= cutoff) continue;
+          const deactivated = inactiveIds.has(userId);
+          const overTime = MAX_RUN_HOURS > 0 && Number.isFinite(startedMs) && startedMs < cutoff;
+          // Berhenti bila: user dinonaktifkan, ATAU sudah melewati batas jam.
+          if (!deactivated && !overTime) continue;
 
-          const hours = ((Date.now() - startedMs) / 3_600_000).toFixed(1);
-          this.logger.warn(
-            `[AutoStop] [${userId}] ${label} berjalan ${hours} jam (batas ${MAX_RUN_HOURS} jam) → auto-stop`,
-          );
+          if (deactivated) {
+            this.logger.warn(`[AutoStop] [${userId}] ${label} → auto-stop (user dinonaktifkan admin)`);
+          } else {
+            const hours = ((Date.now() - startedMs) / 3_600_000).toFixed(1);
+            this.logger.warn(
+              `[AutoStop] [${userId}] ${label} berjalan ${hours} jam (batas ${MAX_RUN_HOURS} jam) → auto-stop`,
+            );
+          }
           try {
             await stop(userId);
           } catch (err: any) {

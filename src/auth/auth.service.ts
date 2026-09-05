@@ -706,9 +706,18 @@ export class AuthService implements OnModuleDestroy {
     let result: { status: number; data: any };
     try {
       const proxy = this.resolveLoginProxy(email);
+      // Stockity punya DUA endpoint verifikasi 2FA: /validate/otp menerima
+      // HANYA 6 digit TOTP; kode pemulihan (backup) divalidasi di /backup dgn
+      // field { backup_code }. Deteksi otomatis: 6 digit angka = OTP, selain
+      // itu = kode pemulihan.
+      const isBackupCode = !/^[0-9]{6}$/.test(code);
+      const otpUrl = isBackupCode
+        ? `${BASE_URL}/passport/v1/2fa/validate/backup?locale=id`
+        : `${BASE_URL}/passport/v1/2fa/validate/otp?locale=id`;
+      const otpBody = isBackupCode ? { backup_code: code } : { otp: code };
       result = await this.curlPost(
-        `${BASE_URL}/passport/v1/2fa/validate/otp?locale=id`,
-        { otp: code },
+        otpUrl,
+        otpBody,
         {
           'device-id':     deviceId,
           'device-type':   'web',
@@ -738,7 +747,7 @@ export class AuthService implements OnModuleDestroy {
         result.status === 401 || result.status === 422 || result.status === 500 ||
         code === 'unexpected.exception' || String(code ?? '').includes('otp');
       const msg = otpLikelyWrong
-        ? 'Kode OTP salah atau sudah kedaluwarsa. Pakai kode terbaru dari aplikasi authenticator lalu coba lagi.'
+        ? 'Kode salah atau sudah kedaluwarsa. Pakai kode OTP terbaru dari authenticator, atau kode pemulihan yang valid.'
         : (body?.errors?.[0]?.context?.message ||
            body?.errors?.[0]?.message ||
            'Verifikasi 2FA gagal, coba lagi');
@@ -806,6 +815,154 @@ export class AuthService implements OnModuleDestroy {
    * Generate track_token sesuai format Stockity: `YYYYMMDD_<uuid>`.
    * Dibutuhkan oleh endpoint sign_up & oauth/web (validasi `{invalid.track.token}`).
    */
+  /**
+   * curl DELETE (dgn body JSON) memakai config via stdin — mirror curlPost.
+   * Dipakai endpoint DELETE /passport/v1/2fa (nonaktif 2FA).
+   */
+  private async curlDelete(
+    url: string,
+    body: object,
+    headers: Record<string, string>,
+    proxy?: string,
+    cookieJar?: string,
+  ): Promise<{ status: number; data: any }> {
+    const esc = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const lines: string[] = [
+      'silent',
+      'show-error',
+      'request = "DELETE"',
+      `url = "${esc(url)}"`,
+    ];
+    for (const [k, v] of Object.entries(headers)) {
+      lines.push(`header = "${esc(`${k}: ${v}`)}"`);
+    }
+    lines.push('header = "Content-Type: application/json"');
+    lines.push(`data-raw = "${esc(JSON.stringify(body))}"`);
+    lines.push('max-time = 25');
+    if (cookieJar) {
+      lines.push(`cookie = "${esc(cookieJar)}"`);
+      lines.push(`cookie-jar = "${esc(cookieJar)}"`);
+    }
+    if (proxy) {
+      lines.push(`proxy = "${esc(proxy)}"`);
+    }
+    lines.push('write-out = "__HTTP_STATUS__%{http_code}"');
+    const config = lines.join('\n') + '\n';
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const cp = execFile(
+        'curl',
+        ['-K', '-'],
+        { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 },
+        (err, out) => {
+          if (out) return resolve(out);
+          if (err) return reject(err);
+          resolve(out ?? '');
+        },
+      );
+      cp.stdin?.end(config);
+    });
+    const idx = stdout.lastIndexOf('__HTTP_STATUS__');
+    const rawBody = (idx >= 0 ? stdout.slice(0, idx) : stdout).trim();
+    const statusCode = idx >= 0 ? parseInt(stdout.slice(idx + '__HTTP_STATUS__'.length).trim(), 10) : 0;
+    let data: any = null;
+    try { data = rawBody ? JSON.parse(rawBody) : null; } catch { data = { raw: rawBody }; }
+    return { status: statusCode, data };
+  }
+
+  /**
+   * Nonaktifkan 2FA memakai KODE PEMULIHAN (backup code) sebagai bukti 2FA.
+   * Dipanggil admin webadmin (backend punya akses Stockity + proxy residensial;
+   * webadmin di IP datacenter tak bisa panggil endpoint auth langsung).
+   * Alur: sign_in (arm cookie) -> validate/otp(kode) -> 2fa_token -> re-sign_in
+   * (token Stockity SEGAR tersimpan di sessions) -> DELETE /passport/v1/2fa.
+   * 2fa_token REUSABLE (JWT ber-exp) -> satu kode menutup re-sign_in + DELETE.
+   */
+  async disable2faWithRecoveryCode(
+    email: string,
+    password: string,
+    code: string,
+    deviceId: string,
+  ): Promise<{ ok: boolean; enabled?: boolean; status?: number; error?: string }> {
+    const mail = String(email ?? '').toLowerCase().trim();
+    const pass = String(password ?? '');
+    const c = String(code ?? '').trim();
+    if (!mail || !pass || !c) return { ok: false, error: 'email/password/kode wajib' };
+    let dev = String(deviceId ?? '').replace(/-/g, '');
+    if (!dev) {
+      const { data: dsess } = await this.supabaseService.client
+        .from('sessions').select('device_id').eq('email', mail).limit(1).maybeSingle();
+      dev = String(dsess?.device_id ?? '').replace(/-/g, '');
+    }
+    if (!dev) return { ok: false, error: 'device-id tak ditemukan' };
+    const jar = join(tmpdir(), `2fadis-${uuidv4()}.jar`);
+    try {
+      const proxy = this.resolveLoginProxy(mail);
+      // 1) arm sign_in -> tangkap cookie sesi ke jar.
+      await this.curlPost(
+        `${BASE_URL}/passport/v2/sign_in?locale=id`,
+        { email: mail, password: pass },
+        {
+          'device-id':     dev,
+          'device-type':   'web',
+          'user-timezone': DEFAULT_TIMEZONE,
+          'accept':        'application/json, text/plain, */*',
+          'User-Agent':    DEFAULT_USER_AGENT,
+          'Origin':        'https://stockity1.id',
+          'Referer':       'https://stockity1.id/',
+        },
+        proxy,
+        jar,
+      ).catch((e: any) => this.logger.warn(`[2FA-DIS] arm sign_in: ${e?.message ?? e}`));
+      // 2) validate kode pemulihan -> 2fa_token (reusable).
+      let token = '';
+      try {
+        token = await this.validate2faOtp(mail, c, dev, jar);
+      } catch (e: any) {
+        return { ok: false, error: `kode pemulihan ditolak: ${e?.message ?? e}` };
+      }
+      if (!token) return { ok: false, error: 'kode pemulihan ditolak' };
+      // 3) re-sign_in dgn 2fa_token -> token Stockity SEGAR tersimpan di sessions.
+      await this.login(mail, pass, { token, deviceId: dev, cookieJar: jar });
+      const { data: sess } = await this.supabaseService.client
+        .from('sessions').select('stockity_token').eq('email', mail)
+        .order('updated_at', { ascending: false }).limit(1).maybeSingle();
+      const authToken = (sess?.stockity_token ?? '') as string;
+      if (!authToken) return { ok: false, error: 'token segar tak ditemukan setelah login' };
+      // 4) DELETE /2fa dgn token segar + 2fa_token.
+      const del = await this.curlDelete(
+        `${BASE_URL}/passport/v1/2fa?locale=id`,
+        { '2fa_token': token },
+        {
+          'device-id':          dev,
+          'device-type':        'web',
+          'user-timezone':      DEFAULT_TIMEZONE,
+          'authorization-token': authToken,
+          'accept':             'application/json, text/plain, */*',
+          'User-Agent':         DEFAULT_USER_AGENT,
+          'Origin':             'https://stockity1.id',
+          'Referer':            'https://stockity1.id/',
+        },
+        proxy,
+        jar,
+      );
+      const enabled = del.data?.data?.enabled;
+      if (del.status >= 200 && del.status < 300 && enabled === false) {
+        this.logger.log(`[2FA-DIS] 2FA dinonaktifkan utk ${mail}`);
+        return { ok: true, enabled: false };
+      }
+      const errMsg =
+        del.data?.errors?.[0]?.code ||
+        del.data?.errors?.[0]?.message ||
+        del.data?.message ||
+        `HTTP ${del.status}`;
+      this.logger.warn(`[2FA-DIS] DELETE gagal ${mail}: ${JSON.stringify(del.data)?.slice(0, 300)}`);
+      return { ok: false, status: del.status, error: String(errMsg) };
+    } finally {
+      unlink(jar).catch(() => {});
+    }
+  }
+
+
   private buildTrackToken(): string {
     const d = new Date();
     const ymd =

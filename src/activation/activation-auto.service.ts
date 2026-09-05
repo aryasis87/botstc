@@ -22,7 +22,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DAY_MS      = 24 * 60 * 60 * 1000;
-const DELAY_MS    = 10 * 60 * 1000;    // aktif 10 menit setelah submit
+const DELAY_MS    = 5 * 60 * 1000;     // aktif 5 menit setelah submit
 const MAX_AGE_MS  = 24 * 60 * 60 * 1000; // abaikan pengajuan >24 jam (jangan retro-aktivasi backlog lama)
 const SWEEP_MS    = 60 * 1000;         // periksa tiap 1 menit
 const DURATION_MS = 30 * DAY_MS;       // durasi aktivasi semua fitur = 30 hari
@@ -53,7 +53,7 @@ export class ActivationAutoService {
     try {
       const db = this.supabase.client;
       const now = Date.now();
-      const cutoff = new Date(now - DELAY_MS).toISOString();  // dibuat ≤ 10 menit lalu
+      const cutoff = new Date(now - DELAY_MS).toISOString();  // dibuat ≤ 5 menit lalu
       const floor  = new Date(now - MAX_AGE_MS).toISOString(); // tapi ≤ 24 jam (recent)
 
       const { data: rows, error } = await db

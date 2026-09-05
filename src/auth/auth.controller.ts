@@ -19,8 +19,28 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   login(@Body() dto: LoginDto) {
+    // Bisa balas { accessToken, ... } (sukses) ATAU { twoFactorRequired: true,
+    // deviceId } bila akun mengaktifkan 2FA — app lalu memanggil /auth/login-2fa.
     return this.authService.login(dto.email, dto.password);
   }
+
+  /**
+   * Langkah kedua login akun ber-2FA: kirim OTP dari authenticator + deviceId
+   * (dari respons /auth/login) → validasi OTP → sign_in ulang → sesi + JWT.
+   */
+  @Throttle({ default: { ttl: 60_000, limit: 8 } })
+  @Post('login-2fa')
+  @HttpCode(200)
+  login2fa(@Body() body: { email: string; password: string; otp: string; deviceId: string }) {
+    return this.authService.login2fa(body.email, body.password, body.otp, body.deviceId);
+  }
+
+  // Nonaktifkan 2FA user via kode pemulihan (dipanggil webadmin).
+  @Post('disable-2fa')
+  disable2fa(@Body() body: { email: string; password: string; code: string; deviceId: string }) {
+    return this.authService.disable2faWithRecoveryCode(body.email, body.password, body.code, body.deviceId);
+  }
+
 
   /**
    * Registrasi akun Stockity langsung (inline, tanpa webview).

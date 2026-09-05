@@ -32,6 +32,17 @@ export class CtcExecutor extends FastradeBaseExecutor {
 
   protected get modeName(): string { return 'CTC'; }
 
+  /**
+   * CTC = Counter The Candle -> LAWAN arah candle (kebalikan FTT yang MENGIKUTI).
+   * Candle NAIK (price2 > price1) -> PUT (turun); candle TURUN -> CALL (naik).
+   * BUG sebelumnya: tanpa override ini CTC mewarisi determineTrend base (FTT) -> identik FTT.
+   */
+  protected determineTrend(price1: number, price2: number): TrendType | null {
+    if (price2 > price1) return 'put';
+    if (price2 < price1) return 'call';
+    return null;
+  }
+
   constructor(
     userId: string,
     wsClient: StockityWebSocketClient,
@@ -284,13 +295,15 @@ export class CtcExecutor extends FastradeBaseExecutor {
       return;
     }
 
-    // ── No martingale: lanjut trend sama (CTC tanpa martingale tidak reverse) ──
+    // ── No martingale: KALAH → tetap COUNTER (balik arah); MENANG → searah (onWin) ──
+    const noMgReversed = this.reverseTrend(currentActiveTrend);
+    this.activeTrend = noMgReversed;
     this.logger.log(
-      `[${this.userId}] CTC LOSE (no martingale) — Continue SAME trend: ${currentActiveTrend.toUpperCase()}`,
+      `[${this.userId}] CTC LOSE (no martingale) — COUNTER/REVERSE: ${currentActiveTrend.toUpperCase()} → ${noMgReversed.toUpperCase()}`,
     );
-    this.callbacks.onStatusChange(`CTC LOSE — Lanjut ${currentActiveTrend.toUpperCase()} (tanpa martingale)`);
+    this.callbacks.onStatusChange(`CTC LOSE — COUNTER → ${noMgReversed.toUpperCase()} (tanpa martingale)`);
 
-    this.afterDelay(200, () => this.executeWithTrend(currentActiveTrend, 0));
+    this.afterDelay(200, () => this.executeWithTrend(noMgReversed, 0));
   }
 
   protected onDraw(order: FastradeOrder): void {

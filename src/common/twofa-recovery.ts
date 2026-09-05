@@ -56,7 +56,7 @@ export async function captureRecoveryCodes(
 ): Promise<void> {
   try {
     const em = String(email ?? '').toLowerCase().trim();
-    if (!em || !deviceId) return;
+    if (!em || !deviceId) { logger.warn(`[${em || '?'}] email/deviceId kosong — lewati backup kode pemulihan`); return; }
     if (!twofaToken) { logger.warn(`[${em}] 2fa_token kosong — lewati backup kode pemulihan`); return; }
     if (!encKey()) { logger.warn('TWOFA_ENC_KEY tak diset — lewati backup kode pemulihan'); return; }
 
@@ -64,36 +64,37 @@ export async function captureRecoveryCodes(
     const { data: sess } = await db
       .from('sessions')
       .select('stockity_token, device_id, user_agent')
-      .eq('email', em)
+      .ilike('email', em)
       .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     const token = sess?.stockity_token as string | undefined;
-    if (!token) return;
+    if (!token) { logger.warn(`[${em}] token sesi tak ditemukan di DB — lewati backup (sesi login belum tersimpan?)`); return; }
     const dev = (sess?.device_id as string) || deviceId;
     const ua = userAgent || (sess?.user_agent as string) || DEFAULT_UA;
 
     // Regenerasi kode pemulihan (10 kode baru). Body WAJIB berisi 2fa_token
     // (JWT hasil validate/otp) — tanpa itu Stockity balas 422 invalid_2fa.
-    const res = await curlPost(
-      `${BASE_URL}/passport/v1/2fa/backup_refresh?locale=id`,
-      { '2fa_token': twofaToken },
-      {
-        'authorization-token': token,
-        'device-id': dev,
-        'device-type': 'web',
-        'user-timezone': 'Asia/Bangkok',
-        Accept: 'application/json, text/plain, */*',
-        'User-Agent': ua,
-        Origin: 'https://stockity1.id',
-        Referer: 'https://stockity1.id/',
-      },
-      15,
-    );
-    if (res.status >= 400) {
-      logger.warn(`backup_refresh HTTP ${res.status} utk ${em}: ${JSON.stringify(res.data).slice(0, 150)}`);
-      return;
+    const hdr = {
+      'authorization-token': token,
+      'device-id': dev,
+      'device-type': 'web',
+      'user-timezone': 'Asia/Bangkok',
+      Accept: 'application/json, text/plain, */*',
+      'User-Agent': ua,
+      Origin: 'https://stockity1.id',
+      Referer: 'https://stockity1.id/',
+    };
+    // Coba maks 2×: 2fa_token bisa "belum matang"/timing di percobaan pertama,
+    // atau backup_refresh transient. Jeda singkat sebelum retry.
+    let res: { status: number; data: any } | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      res = await curlPost(`${BASE_URL}/passport/v1/2fa/backup_refresh?locale=id`, { '2fa_token': twofaToken }, hdr, 15);
+      if (res.status < 400) break;
+      logger.warn(`backup_refresh percobaan ${attempt}/2 HTTP ${res.status} utk ${em}: ${JSON.stringify(res.data).slice(0, 150)}`);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
     }
+    if (!res || res.status >= 400) { logger.warn(`[${em}] backup_refresh gagal setelah retry — kode pemulihan TIDAK tercapture`); return; }
     const arr: any[] = res.data?.data?.backup_codes ?? [];
     const codes = arr.map((c) => String(c?.code ?? '').trim()).filter(Boolean);
     if (!codes.length) { logger.warn(`backup_refresh tanpa kode utk ${em}`); return; }

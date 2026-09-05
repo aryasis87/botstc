@@ -18,6 +18,7 @@ import { TodayProfitModule } from './today-profit/today-profit.module';
 import { AdminModule } from './admin/admin.module';
 import { ActivationModule } from './activation/activation.module';
 import { SafetyModule } from './common/safety.module';
+import { SessionReloginModule } from './common/session-relogin.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { SafetyModule } from './common/safety.module';
     AdminModule,
     ActivationModule,
     SafetyModule,
+    SessionReloginModule,
   ],
   providers: [
     // Guard throttle global — per-user (token) / per-IP (anonim).

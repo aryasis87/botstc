@@ -145,8 +145,11 @@ export class AgentAlphaService {
       const { data } = await db.from('app_config').select('value').eq('key', 'agentalpha_access').maybeSingle();
       if (!data?.value) return false;
       const v = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+      const uid = String(userId).trim();
+      // TAHAN SEMUA BENTUK: array lama (id=aktif selamanya) atau { id: expiresAt }.
+      if (Array.isArray(v)) return v.map((x) => String(x).trim()).includes(uid);
       if (!v || typeof v !== 'object') return false;
-      const exp = Number(v[String(userId).trim()]);
+      const exp = Number(v[uid]);
       return Number.isFinite(exp) && exp > Date.now();
     } catch (e) {
       this.logger.warn(`[${userId}] cek akses agentalpha gagal (fail-open): ${e}`);
@@ -354,9 +357,19 @@ export class AgentAlphaService {
   }
 
   async getLogs(userId: string, limit = 100): Promise<any[]> {
-    const state = this.active.get(userId);
-    if (!state) return [];
-    return state.logs.slice(-limit);
+    // Baca dari mode_logs (PERSISTEN) — riwayat tetap ada walau bot berhenti/restart.
+    // (Dulu hanya baca state.logs di-memori → kosong saat bot tak aktif → riwayat hilang.)
+    try {
+      const { data } = await this.supabase.client
+        .from('mode_logs').select('data')
+        .eq('user_id', userId).eq('mode', 'AGENT_ALPHA')
+        .order('executed_at', { ascending: false }).limit(limit);
+      return (data ?? []).map((r: any) => r.data).reverse();
+    } catch (e: any) {
+      this.logger.warn(`[${userId}] getLogs mode_logs gagal: ${e?.message}`);
+      const state = this.active.get(userId);
+      return state ? state.logs.slice(-limit) : [];
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -471,16 +484,43 @@ export class AgentAlphaService {
 
   private appendLog(userId: string, log: AlphaLog) {
     const state = this.active.get(userId);
-    if (!state) return;
-    state.logs.push(log);
-    if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500);
+    if (state) {
+      state.logs.push(log);
+      if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500);
+    }
+    // Persist ke mode_logs biar riwayat awet (dibaca getLogs walau bot berhenti).
+    this.persistAlphaLog(userId, log).catch((e: any) => this.logger.warn(`[${userId}] persistAlphaLog: ${e?.message}`));
+  }
+
+  private async persistAlphaLog(userId: string, log: AlphaLog): Promise<void> {
+    await this.supabase.client.from('mode_logs').upsert({
+      id: log.id, user_id: userId, mode: 'AGENT_ALPHA', data: log,
+      executed_at: this.supabase.timestampFromMillis(log.executedAt),
+    }, { onConflict: 'id' });
   }
 
   private updateLog(userId: string, orderId: string, patch: Partial<AlphaLog>) {
     const state = this.active.get(userId);
-    if (!state) return;
-    const l = state.logs.find((x) => x.orderId === orderId);
-    if (l) Object.assign(l, patch);
+    let merged: AlphaLog | undefined;
+    if (state) {
+      const l = state.logs.find((x) => x.orderId === orderId);
+      if (l) { Object.assign(l, patch); merged = l; }
+    }
+    // Persist hasil (WIN/LOSE, profit) ke mode_logs.
+    this.persistAlphaLogUpdate(userId, orderId, patch, merged).catch((e: any) => this.logger.warn(`[${userId}] persistAlphaLogUpdate: ${e?.message}`));
+  }
+
+  private async persistAlphaLogUpdate(userId: string, orderId: string, patch: Partial<AlphaLog>, merged?: AlphaLog): Promise<void> {
+    let data: any = merged;
+    if (!data) {
+      const { data: row } = await this.supabase.client.from('mode_logs').select('data').eq('id', orderId).maybeSingle();
+      if (!row?.data) return;
+      data = { ...(row.data as any), ...patch };
+    }
+    await this.supabase.client.from('mode_logs').upsert({
+      id: orderId, user_id: userId, mode: 'AGENT_ALPHA', data,
+      executed_at: this.supabase.timestampFromMillis(data.executedAt),
+    }, { onConflict: 'id' });
   }
 
   private async updateStatus(userId: string, botState: string) {
